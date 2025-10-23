@@ -36,7 +36,7 @@ MeshBuddy is a comprehensive tool that bridges MeshCore network data with Discor
 
 1. **Clone the repository:**
    ```bash
-   git clone [<repository-url>](https://github.com/chrisdavis2110/MeshBuddy)
+   git clone https://github.com/chrisdavis2110/MeshBuddy.git
    cd MeshBuddy
    ```
 
