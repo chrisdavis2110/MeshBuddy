@@ -1,0 +1,13 @@
+[Unit]
+Description=MeshBuddy Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/ubuntu/MeshBuddy
+ExecStart=/home/ubuntu/MeshBuddy/meshbuddy/bin/python -O /home/ubuntu/MeshBuddy/hikari_bot.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
