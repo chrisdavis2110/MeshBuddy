@@ -58,7 +58,7 @@ async def periodic_channel_update():
     """Periodically update channel name"""
     while True:
         try:
-            await update_channel_name()
+            await update_repeater_channel_name()
             # Update every 5 minutes (300 seconds)
             await asyncio.sleep(300)
         except Exception as e:
@@ -205,9 +205,9 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                     repeater = repeaters[0]  # Get the first repeater
                     name = repeater.get('name', 'Unknown')
                     last_seen = repeater.get('last_seen', 'Unknown')
-                    location = repeater.get('location', {'latitude': 0, 'longitude': 0})
-                    lat = location.get('latitude', 0)
-                    lon = location.get('longitude', 0)
+                    location = repeater.get('location', {}) or {}
+                    lat = location.get('latitude', 0) if location else 0
+                    lon = location.get('longitude', 0) if location else 0
 
                     # Format last_seen timestamp
                     formatted_last_seen = "Unknown"
@@ -219,9 +219,9 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                             formatted_last_seen = "Invalid timestamp"
 
                     message = f"❌ {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
-                    message += f"Name: {name}\n"
-                    message += f"Last Seen: {formatted_last_seen}\n"
-                    message += f"Location: {lat}, {lon}"
+                    message += f" Name: {name}\n"
+                    message += f" Last Seen: {formatted_last_seen}\n"
+                    message += f" Location: {lat}, {lon}"
 
                     if len(repeaters) > 1:
                         message += f"\n\n*Note: {len(repeaters)} repeater(s) found with this prefix*"
@@ -261,9 +261,9 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                     repeater = repeaters[0]
                     name = repeater.get('name', 'Unknown')
                     last_seen = repeater.get('last_seen', 'Unknown')
-                    location = repeater.get('location', {'latitude': 0, 'longitude': 0})
-                    lat = location.get('latitude', 0)
-                    lon = location.get('longitude', 0)
+                    location = repeater.get('location', {}) or {}
+                    lat = location.get('latitude', 0) if location else 0
+                    lon = location.get('longitude', 0) if location else 0
 
                     # Format last_seen timestamp
                     formatted_last_seen = "Unknown"
@@ -274,16 +274,16 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                         except Exception:
                             formatted_last_seen = "Invalid timestamp"
 
-                    message = f"Repeater {hex_prefix}:\n- Name: {name}\n- Last Seen: {formatted_last_seen}\n- Location: {lat}, {lon}"
+                    message = f"Repeater {hex_prefix}:\n Name: {name}\n Last Seen: {formatted_last_seen}\n Location: {lat}, {lon}"
                 else:
                     # Multiple repeaters - show summary
                     message = f"Found {len(repeaters)} repeater(s) with prefix {hex_prefix}:\n\n"
                     for i, repeater in enumerate(repeaters, 1):
                         name = repeater.get('name', 'Unknown')
                         last_seen = repeater.get('last_seen', 'Unknown')
-                        location = repeater.get('location', {'latitude': 0, 'longitude': 0})
-                        lat = location.get('latitude', 0)
-                        lon = location.get('longitude', 0)
+                        location = repeater.get('location', {}) or {}
+                        lat = location.get('latitude', 0) if location else 0
+                        lon = location.get('longitude', 0) if location else 0
 
                         # Format last_seen timestamp
                         formatted_last_seen = "Unknown"
@@ -294,7 +294,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                             except Exception:
                                 formatted_last_seen = "Invalid timestamp"
 
-                        message += f"**#{i}:** {name}\n\- Last Seen: {formatted_last_seen}\n\- Location: {lat}, {lon}\n\n"
+                        message += f"**#{i}:** {name}\n Last Seen: {formatted_last_seen}\n Location: {lat}, {lon}\n\n"
             else:
                 message = f"No repeater found with prefix {hex_prefix}."
 
