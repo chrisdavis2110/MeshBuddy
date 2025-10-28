@@ -1,0 +1,19 @@
+[Unit]
+Description=MeshCore MQTT Reader - Continuous packet collection
+After=network.target
+
+[Service]
+Type=simple
+User=chris
+WorkingDirectory=/Users/chris/Documents/VSCode/meshcore/MeshBuddy
+Environment="PATH=/Users/chris/Documents/VSCode/meshcore/MeshBuddy/meshbuddy/bin"
+ExecStart=/Users/chris/Documents/VSCode/meshcore/MeshBuddy/meshbuddy/bin/python /Users/chris/Documents/VSCode/meshcore/MeshBuddy/mqttreader.py
+Restart=always
+RestartSec=10
+
+# Save on exit
+KillMode=process
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

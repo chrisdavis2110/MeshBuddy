@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WCMesh Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      font-family: sans-serif;
+    }
+    #sidebar {
+      width: 300px;
+      padding: 10px;
+      background: #f4f4f4;
+      overflow-y: auto;
+      border-right: 1px solid #ccc;
+      height: 100vh; /* make sidebar fill viewport height */
+      box-sizing: border-box; /* include padding in height */
+      position: relative; /* for the resizer handle */
+    }
+    #sidebar.hidden { display: none; }
+    #sidebar-resizer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 6px;
+      height: 100%;
+      cursor: col-resize;
+      background: transparent; /* could use rgba(0,0,0,0.05) for visibility */
+    }
+    #map {
+      flex: 1;
+      height: 100vh;
+      position: relative; /* allow overlay controls if needed */
+    }
+    .section {
+      margin-bottom: 20px;
+    }
+    .section h3 {
+      margin: 0;
+    }
+    .item {
+      cursor: pointer;
+      margin-left: 20px;
+      padding: 2px 0;
+    }
+    .copy-button {
+      margin-top: 6px;
+      padding: 4px 8px;
+      font-size: 0.9em;
+      cursor: pointer;
+    }
+    .leaflet-popup-content {
+      width: 250px;
+      word-wrap: break-word;
+    }
+    #search-box {
+      width: 100%;
+      padding: 6px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    .sidebar-title {
+      font-weight: 700;
+      font-size: 1.1em;
+      margin-bottom: 8px;
+    }
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .hamburger-btn {
+      background: transparent;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      width: 32px;
+      height: 32px;
+      line-height: 30px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <button id="toggle-sidebar-btn" class="hamburger-btn" title="Hide sidebar" aria-label="Hide sidebar">☰</button>
+      <div class="sidebar-title"><strong>WCMesh Map</strong></div>
+    </div>
+    <input
+      type="text"
+      id="search-box"
+      placeholder="Search nodes..."
+    />
+    <div id="sidebar-resizer" title="Drag to resize sidebar"></div>
+    <div class="section">
+      <label for="last-seen-filter">Last Seen</label>
+      <select id="last-seen-filter" style="width: 100%; padding: 6px; box-sizing: border-box; margin: 8px 0 8px 0;">
+        <option value="ALL">ALL</option>
+        <option value="1hr">1hr</option>
+        <option value="3hr">3hr</option>
+        <option value="6hr">6hr</option>
+        <option value="1d">1d</option>
+        <option value="2d">2d</option>
+        <option value="3d">3d</option>
+        <option value="7d" selected>7d</option>
+        <option value="1mo">1mo</option>
+        <option value="2mo">2mo</option>
+        <option value="3mo">3mo</option>
+      </select>
+      <label style="display:block; margin-bottom: 8px;">
+        <input type="checkbox" id="stale-nodes" /> Stale Nodes
+      </label>
+      <label style="display:block; margin-bottom: 12px;">
+        <input type="checkbox" id="no-location" /> No Location
+      </label>
+    </div>
+    <div class="section">
+      <label><input type="checkbox" id="toggle-companions" checked /> Companions (<span id="count-companions">0</span>)</label>
+      <div id="list-companions"></div>
+    </div>
+    <div class="section">
+      <label><input type="checkbox" id="toggle-repeaters" checked /> Repeaters (<span id="count-repeaters">0</span>)</label>
+      <div id="list-repeaters"></div>
+    </div>
+    <div class="section">
+      <label><input type="checkbox" id="toggle-servers" checked /> Room Servers (<span id="count-servers">0</span>)</label>
+      <div id="list-servers"></div>
+    </div>
+  </div>
+  <button id="floating-hamburger" title="Show sidebar" aria-label="Show sidebar" style="position:fixed; top:10px; left:10px; z-index:1000; padding:6px 10px; display:none; border:1px solid #ccc; border-radius:4px; background:#fff; cursor:pointer;">☰</button>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([34.05, -118.25], 9);
+    L.tileLayer('https://{s}.tile.thunderforest.com/outdoors/{z}/{x}/{y}{r}.png?apikey={apikey}', {
+	attribution: '&copy; <a href="http://www.thunderforest.com/">Thunderforest</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+	apikey: 'ec4cde5bbe7048a08c579044fcfcd3c1'
+      }).addTo(map);    
+//    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+//      attribution: '&copy; OpenStreetMap contributors'
+//    }).addTo(map);
+    // Move zoom controls to bottom right
+    map.zoomControl.setPosition('bottomright');
+
+    function copyKey(fullKey) {
+      navigator.clipboard.writeText(fullKey).then(() => {
+        alert('Public key copied to clipboard!');
+      }).catch(err => {
+        console.error('Copy failed:', err);
+      });
+    }
+
+    const markersByRole = {
+      1: [], // Companions
+      2: [], // Repeaters
+      3: []  // Room Servers
+    };
+
+    // Nodes that lack a valid location (no lat/lon or 0/0)
+    const noLocationByRole = {
+      1: [],
+      2: [],
+      3: []
+    };
+
+    function makeLabel(node) {
+      return `${node.public_key.slice(0, 2).toUpperCase()} : ${node.name}`;
+    }
+
+    function popupHtmlForNode(node) {
+      const truncatedKey = `${node.public_key.slice(0, 12)}...${node.public_key.slice(-12)}`;
+      return `
+        <div>
+          <strong>${node.name}</strong><br/>
+          Type: ${node.type_display}<br/>
+          Public Key: <span>${truncatedKey}</span><br/>
+          Last Seen: ${node.last_seen}<br/>
+          <button class="copy-button" onclick="copyKey('${node.public_key}')">Copy Full Key</button>
+        </div>
+      `;
+    }
+
+    function openCenteredPopupForNode(node) {
+      const content = popupHtmlForNode(node);
+      const center = map.getCenter();
+      L.popup({ closeButton: true, autoPan: true })
+        .setLatLng(center)
+        .setContent(content)
+        .openOn(map);
+    }
+
+    function getDurationMs(value) {
+      const map = {
+        '1hr': 1 * 60 * 60 * 1000,
+        '3hr': 3 * 60 * 60 * 1000,
+        '6hr': 6 * 60 * 60 * 1000,
+        '1d': 24 * 60 * 60 * 1000,
+        '2d': 2 * 24 * 60 * 60 * 1000,
+        '3d': 3 * 24 * 60 * 60 * 1000,
+        '7d': 7 * 24 * 60 * 60 * 1000,
+        // Approximate months as 30 days
+        '1mo': 30 * 24 * 60 * 60 * 1000,
+        '2mo': 60 * 24 * 60 * 60 * 1000,
+        '3mo': 90 * 24 * 60 * 60 * 1000,
+      };
+      return map[value] ?? null; // null means ALL
+    }
+
+    // last_seen can be ISO string (e.g. 2025-10-09T20:26:52Z) or Unix seconds
+    function getLastSeenTimestamp(node) {
+      const v = node.last_seen;
+      if (v == null) return null;
+      if (typeof v === 'number') return v * 1000; // seconds -> ms
+      if (typeof v === 'string') {
+        const n = Number(v);
+        if (!Number.isNaN(n)) return n * 1000; // numeric string seconds -> ms
+        const t = Date.parse(v);
+        if (!Number.isNaN(t)) return t; // ISO date string -> ms epoch
+      }
+      return null;
+    }
+
+    function roleChecked(role) {
+      if (role === 1) return document.getElementById('toggle-companions').checked;
+      if (role === 2) return document.getElementById('toggle-repeaters').checked;
+      return document.getElementById('toggle-servers').checked;
+    }
+
+    function setListDisplay(role) {
+      const listId = role === 1 ? 'list-companions' : role === 2 ? 'list-repeaters' : 'list-servers';
+      document.getElementById(listId).style.display = roleChecked(role) ? 'block' : 'none';
+    }
+
+    function setCount(role, count) {
+      const id = role === 1 ? 'count-companions' : role === 2 ? 'count-repeaters' : 'count-servers';
+      document.getElementById(id).textContent = String(count);
+    }
+
+    function rebuildSidebarForRole(role, containerId, filteredItems) {
+      const container = document.getElementById(containerId);
+      container.innerHTML = '';
+      const sorted = filteredItems
+        .map(({ node, marker }) => ({ label: makeLabel(node), node, marker }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      sorted.forEach(({ label, node, marker }) => {
+        const item = document.createElement('div');
+        item.className = 'item';
+        item.textContent = label;
+        if (marker) {
+          item.onclick = () => {
+            const loc = node.location;
+            map.setView([loc.latitude, loc.longitude], 13);
+            marker.openPopup();
+          };
+        } else {
+          item.onclick = () => {
+            openCenteredPopupForNode(node);
+          };
+        }
+        container.appendChild(item);
+      });
+      setCount(role, sorted.length);
+    }
+
+    function rebuildUI() {
+      const query = document.getElementById('search-box').value.toLowerCase();
+      const lhValue = document.getElementById('last-seen-filter').value;
+      const duration = getDurationMs(lhValue);
+      const stale = document.getElementById('stale-nodes').checked;
+      const noLoc = document.getElementById('no-location').checked;
+      const now = Date.now();
+      const cutoff = duration == null ? -Infinity : now - duration;
+
+      const sourceByRole = noLoc ? noLocationByRole : markersByRole;
+
+      // Update map and sidebar per role
+      [1,2,3].forEach(role => {
+        // Remove all markers for this role first
+        markersByRole[role].forEach(({ marker }) => {
+          if (map.hasLayer(marker)) map.removeLayer(marker);
+        });
+
+        const filtered = sourceByRole[role].filter(({ node }) => {
+          // last_seen filter (applies only when a duration is selected)
+          if (duration != null) {
+            const ts = getLastSeenTimestamp(node);
+            const passes = ts != null && ts >= cutoff;
+            if ((!stale && !passes) || (stale && passes)) return false;
+          }
+          // search filter
+          const text = makeLabel(node).toLowerCase();
+          if (query && !text.includes(query)) return false;
+          return true;
+        });
+
+        // Rebuild sidebar list
+        const listId = role === 1 ? 'list-companions' : role === 2 ? 'list-repeaters' : 'list-servers';
+        rebuildSidebarForRole(role, listId, filtered);
+
+        // Add markers back if role is toggled on (and only if we are not in No Location mode)
+        if (!noLoc && roleChecked(role)) {
+          filtered.forEach(({ marker }) => marker.addTo(map));
+        }
+
+        // Ensure list visibility follows toggle
+        setListDisplay(role);
+      });
+    }
+
+    function toggleVisibility(role, checked) {
+      // Rebuild the UI to apply toggles consistently with filters and counts
+      rebuildUI();
+    }
+
+    // Search now triggers a full rebuild to keep map and counts in sync
+    function applySearchFilter() {
+      rebuildUI();
+    }
+
+    document.getElementById('toggle-companions').addEventListener('change', e => {
+      toggleVisibility(1, e.target.checked);
+    });
+    document.getElementById('toggle-repeaters').addEventListener('change', e => {
+      toggleVisibility(2, e.target.checked);
+    });
+    document.getElementById('toggle-servers').addEventListener('change', e => {
+      toggleVisibility(3, e.target.checked);
+    });
+    document.getElementById('search-box').addEventListener('input', applySearchFilter);
+    document.getElementById('last-seen-filter').addEventListener('change', rebuildUI);
+    document.getElementById('stale-nodes').addEventListener('change', rebuildUI);
+    document.getElementById('no-location').addEventListener('change', rebuildUI);
+
+    // Sidebar hide/show
+    const sidebarEl = document.getElementById('sidebar');
+    const toggleBtn = document.getElementById('toggle-sidebar-btn');
+    const floatingBtn = document.getElementById('floating-hamburger');
+    function invalidateMapSoon() {
+      // Defer to allow layout to settle
+      setTimeout(() => map.invalidateSize(), 50);
+    }
+    function setFloatingVisible(vis) {
+      floatingBtn.style.display = vis ? 'inline-block' : 'none';
+    }
+    toggleBtn.addEventListener('click', () => {
+      const hidden = sidebarEl.classList.toggle('hidden');
+      // Update button title/aria to reflect next action
+      toggleBtn.title = hidden ? 'Show sidebar' : 'Hide sidebar';
+      toggleBtn.setAttribute('aria-label', hidden ? 'Show sidebar' : 'Hide sidebar');
+      setFloatingVisible(hidden);
+      invalidateMapSoon();
+    });
+    floatingBtn.addEventListener('click', () => {
+      // Show sidebar when floating hamburger is clicked
+      sidebarEl.classList.remove('hidden');
+      toggleBtn.title = 'Hide sidebar';
+      toggleBtn.setAttribute('aria-label', 'Hide sidebar');
+      setFloatingVisible(false);
+      invalidateMapSoon();
+    });
+
+    // Sidebar resizer
+    const resizer = document.getElementById('sidebar-resizer');
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+    const minWidth = 200;
+    const maxWidth = 600;
+
+    function onMouseMove(e) {
+      if (!isResizing) return;
+      const dx = e.clientX - startX;
+      let newWidth = startWidth + dx;
+      if (newWidth < minWidth) newWidth = minWidth;
+      if (newWidth > maxWidth) newWidth = maxWidth;
+      sidebarEl.style.width = newWidth + 'px';
+      invalidateMapSoon();
+    }
+    function onMouseUp() {
+      if (!isResizing) return;
+      isResizing = false;
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      invalidateMapSoon();
+    }
+    if (resizer) {
+      resizer.addEventListener('mousedown', e => {
+        // ignore if hidden
+        if (sidebarEl.classList.contains('hidden')) return;
+        isResizing = true;
+        startX = e.clientX;
+        startWidth = sidebarEl.getBoundingClientRect().width;
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+        e.preventDefault();
+      });
+    }
+
+    // no label text to update for hamburger; attributes handled on click
+
+//fetch('https://analyzer.letsmesh.net/api/nodes?&region=LAX')
+    fetch('nodes.json')
+      .then(response => response.json())
+      .then(data => {
+        data.forEach(node => {
+          const loc = node.location;
+          if (!loc || loc.latitude === 0 || loc.longitude === 0) {
+            // keep track of nodes without valid coordinates
+            if (noLocationByRole[node.device_role]) {
+              noLocationByRole[node.device_role].push({ marker: null, node });
+            }
+            return;
+          }
+
+          let color = 'gray';
+          if (node.device_role === 1) color = 'orange';
+          else if (node.device_role === 2) color = 'blue';
+          else if (node.device_role === 3) color = 'green';
+
+          const popupContent = popupHtmlForNode(node);
+
+          const marker = L.circleMarker([loc.latitude, loc.longitude], {
+            radius: 6,
+            color: color,
+            fillColor: color,
+            fillOpacity: 0.8
+          }).bindPopup(popupContent);
+
+          marker.addTo(map);
+          markersByRole[node.device_role].push({ marker, node });
+        });
+
+        // Initial UI build (applies counts and filters)
+        rebuildUI();
+      });
+  </script>
+</body>
+</html>

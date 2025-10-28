@@ -1,0 +1,173 @@
+{
+  "timestamp": "2025-10-26T14:02:38.696777",
+  "data": [
+    {
+      "public_key": "24568EAC72CF2F27ED99C931560BC057C9F2300D8F42CB60EB13DE91013B4D4C",
+      "name": "Node_24568EAC",
+      "device_role": 1,
+      "first_seen": "2025-10-26T14:02:17.956666",
+      "last_seen": "2025-10-26T14:02:37.864866",
+      "regions": [
+        "LAX"
+      ],
+      "is_mqtt_connected": true,
+      "decoded_payload": {
+        "origin": "trhs-mqtt",
+        "origin_id": "24568EAC72CF2F27ED99C931560BC057C9F2300D8F42CB60EB13DE91013B4D4C",
+        "timestamp": "2025-10-26T21:02:17.769119",
+        "type": "PACKET",
+        "direction": "rx",
+        "time": "23:53:21",
+        "date": "15/5/2024",
+        "len": "117",
+        "packet_type": "4",
+        "route": "F",
+        "payload_len": "112",
+        "raw": "1103C26960F697726D67BF63A4DB25BF324BA21278E6BC02477FFF84A7CBF8732238572910528CFE680148FF24C916CCE3DC386CCAF2753DC70A64E8DA80840B3D6322C61DC36FE0F3B0957DCDDA29A4621593F6F404258C49FD26CD94297A0D42352A4ECED4C5120B81433244204C6F774D657368",
+        "SNR": "7",
+        "RSSI": "-99",
+        "score": "1000",
+        "duration": "1337",
+        "hash": "47E21EE839454752",
+        "id": "24568EAC72CF2F27ED99C931560BC057C9F2300D8F42CB60EB13DE91013B4D4C",
+        "decoded": {
+          "raw": "1103C26960F697726D67BF63A4DB25BF324BA21278E6BC02477FFF84A7CBF8732238572910528CFE680148FF24C916CCE3DC386CCAF2753DC70A64E8DA80840B3D6322C61DC36FE0F3B0957DCDDA29A4621593F6F404258C49FD26CD94297A0D42352A4ECED4C5120B81433244204C6F774D657368",
+          "length": 117,
+          "type": "NODEINFO",
+          "type_id": 1,
+          "want_response": false,
+          "hop_limit": 1,
+          "mode": "NodeInfo",
+          "data_length": 116
+        }
+      },
+      "location": null
+    },
+    {
+      "public_key": "4BA63F5C68969F0CC9896C7640272CD1A15390503BC64A52E398C7F8157565AB",
+      "name": "Node_4BA63F5C",
+      "device_role": 1,
+      "first_seen": "2025-10-26T14:02:31.608239",
+      "last_seen": "2025-10-26T14:02:33.171408",
+      "regions": [
+        "LAX"
+      ],
+      "is_mqtt_connected": true,
+      "decoded_payload": {
+        "origin": "n8mqtt\r",
+        "origin_id": "4BA63F5C68969F0CC9896C7640272CD1A15390503BC64A52E398C7F8157565AB",
+        "timestamp": "2025-10-26T14:02:31.548732",
+        "type": "PACKET",
+        "direction": "rx",
+        "time": "21:02:33",
+        "date": "26/10/2025",
+        "len": "120",
+        "packet_type": "4",
+        "route": "F",
+        "payload_len": "112",
+        "raw": "1106C2696656034DF697726D67BF63A4DB25BF324BA21278E6BC02477FFF84A7CBF8732238572910528CFE680148FF24C916CCE3DC386CCAF2753DC70A64E8DA80840B3D6322C61DC36FE0F3B0957DCDDA29A4621593F6F404258C49FD26CD94297A0D42352A4ECED4C5120B81433244204C6F774D657368",
+        "SNR": "1",
+        "RSSI": "-110",
+        "score": "743",
+        "duration": "1337",
+        "hash": "47E21EE839454752",
+        "id": "4BA63F5C68969F0CC9896C7640272CD1A15390503BC64A52E398C7F8157565AB",
+        "decoded": {
+          "raw": "1106C2696656034DF697726D67BF63A4DB25BF324BA21278E6BC02477FFF84A7CBF8732238572910528CFE680148FF24C916CCE3DC386CCAF2753DC70A64E8DA80840B3D6322C61DC36FE0F3B0957DCDDA29A4621593F6F404258C49FD26CD94297A0D42352A4ECED4C5120B81433244204C6F774D657368",
+          "length": 120,
+          "type": "NODEINFO",
+          "type_id": 1,
+          "want_response": false,
+          "hop_limit": 1,
+          "mode": "NodeInfo",
+          "data_length": 119
+        }
+      },
+      "location": null
+    },
+    {
+      "public_key": "646468FE0628276854D6C4DE038F04E8B81219DBA133A89F42F8EE532C167931",
+      "name": "Node_646468FE",
+      "device_role": 1,
+      "first_seen": "2025-10-26T14:02:19.192529",
+      "last_seen": "2025-10-26T14:02:19.192566",
+      "regions": [
+        "LAX"
+      ],
+      "is_mqtt_connected": true,
+      "decoded_payload": {
+        "origin": "CC9 MC2MQTT\r",
+        "origin_id": "646468FE0628276854D6C4DE038F04E8B81219DBA133A89F42F8EE532C167931",
+        "timestamp": "2025-10-26T14:02:19.158930",
+        "type": "PACKET",
+        "direction": "rx",
+        "time": "23:05:15",
+        "date": "26/10/2025",
+        "len": "117",
+        "packet_type": "4",
+        "route": "F",
+        "payload_len": "112",
+        "raw": "1103C26966F697726D67BF63A4DB25BF324BA21278E6BC02477FFF84A7CBF8732238572910528CFE680148FF24C916CCE3DC386CCAF2753DC70A64E8DA80840B3D6322C61DC36FE0F3B0957DCDDA29A4621593F6F404258C49FD26CD94297A0D42352A4ECED4C5120B81433244204C6F774D657368",
+        "SNR": "8",
+        "RSSI": "-61",
+        "score": "1000",
+        "duration": "1337",
+        "hash": "47E21EE839454752",
+        "id": "646468FE0628276854D6C4DE038F04E8B81219DBA133A89F42F8EE532C167931",
+        "decoded": {
+          "raw": "1103C26966F697726D67BF63A4DB25BF324BA21278E6BC02477FFF84A7CBF8732238572910528CFE680148FF24C916CCE3DC386CCAF2753DC70A64E8DA80840B3D6322C61DC36FE0F3B0957DCDDA29A4621593F6F404258C49FD26CD94297A0D42352A4ECED4C5120B81433244204C6F774D657368",
+          "length": 117,
+          "type": "NODEINFO",
+          "type_id": 1,
+          "want_response": false,
+          "hop_limit": 1,
+          "mode": "NodeInfo",
+          "data_length": 116
+        }
+      },
+      "location": null
+    },
+    {
+      "public_key": "C2891B3A90F69CB8904C2BA0F3B3EC968F53D205A4859A356F2F291688E6C0E1",
+      "name": "Node_C2891B3A",
+      "device_role": 1,
+      "first_seen": "2025-10-26T14:02:12.683493",
+      "last_seen": "2025-10-26T14:02:31.882452",
+      "regions": [
+        "LAX"
+      ],
+      "is_mqtt_connected": true,
+      "decoded_payload": {
+        "origin": "C2D MQTT\r",
+        "origin_id": "C2891B3A90F69CB8904C2BA0F3B3EC968F53D205A4859A356F2F291688E6C0E1",
+        "timestamp": "2025-10-26T14:02:12.660522",
+        "type": "PACKET",
+        "direction": "rx",
+        "time": "21:02:13",
+        "date": "26/10/2025",
+        "len": "114",
+        "packet_type": "4",
+        "route": "F",
+        "payload_len": "112",
+        "raw": "1100F697726D67BF63A4DB25BF324BA21278E6BC02477FFF84A7CBF8732238572910528CFE680148FF24C916CCE3DC386CCAF2753DC70A64E8DA80840B3D6322C61DC36FE0F3B0957DCDDA29A4621593F6F404258C49FD26CD94297A0D42352A4ECED4C5120B81433244204C6F774D657368",
+        "SNR": "10",
+        "RSSI": "-52",
+        "score": "1000",
+        "duration": "1296",
+        "hash": "47E21EE839454752",
+        "id": "C2891B3A90F69CB8904C2BA0F3B3EC968F53D205A4859A356F2F291688E6C0E1",
+        "decoded": {
+          "raw": "1100F697726D67BF63A4DB25BF324BA21278E6BC02477FFF84A7CBF8732238572910528CFE680148FF24C916CCE3DC386CCAF2753DC70A64E8DA80840B3D6322C61DC36FE0F3B0957DCDDA29A4621593F6F404258C49FD26CD94297A0D42352A4ECED4C5120B81433244204C6F774D657368",
+          "length": 114,
+          "type": "NODEINFO",
+          "type_id": 1,
+          "want_response": false,
+          "hop_limit": 1,
+          "mode": "NodeInfo",
+          "data_length": 113
+        }
+      },
+      "location": null
+    }
+  ]
+}
