@@ -271,7 +271,7 @@ def get_unused_keys(days=7, data_dir=None):
         all_possible_keys.add(hex_key)
 
     # Find unused keys
-    unused_keys = all_possible_keys - used_keys
+    unused_keys = all_possible_keys - used_keys - set(['00', 'FF'])  # Exclude '00' and 'FF'
 
     if unused_keys:
         # Sort the unused keys for consistent output
