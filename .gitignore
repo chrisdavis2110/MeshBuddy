@@ -4,6 +4,7 @@ credentials.json
 creds.json
 nodes.json
 updated.json
+customNodes.json
 __pycache__/
 meshbuddy/
 venv/
