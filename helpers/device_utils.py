@@ -296,7 +296,9 @@ def get_repeater(prefix, days=7, data_dir=None):
     if devices is None:
         return None
 
-    repeaters = devices['repeaters']
+    repeaters = devices.get('repeaters')
+    if repeaters is None or not isinstance(repeaters, list):
+        return None
 
     # Find all repeaters with the specified prefix
     matching_repeaters = []
@@ -316,7 +318,7 @@ def get_repeater(prefix, days=7, data_dir=None):
     for i, contact in enumerate(matching_repeaters, 1):
         name = contact.get('name', 'Unknown')
         last_seen = contact.get('last_seen', 'Unknown')
-        location = contact.get('location', {'latitude': 0, 'longitude': 0})
+        location = contact.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
         lat = location.get('latitude', 0)
         lon = location.get('longitude', 0)
 

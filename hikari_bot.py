@@ -6,6 +6,8 @@ import configparser
 import logging
 import sys
 import asyncio
+import json
+import os
 from datetime import datetime
 from meshmqtt import MeshMQTTBridge
 from helpers import extract_device_types, load_config
@@ -128,6 +130,18 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
         try:
             unused_keys = bridge.get_unused_keys(days=self.days)
             if unused_keys:
+                # Check customNodes.json first
+                custom_name = None
+                if os.path.exists("customNodes.json"):
+                    try:
+                        with open("customNodes.json", 'r') as f:
+                            custom_data = json.load(f)
+                            for node in custom_data.get('data', []):
+                                if node.get('prefix', '').upper() in unused_keys:
+                                    unused_keys.remove(node.get('prefix', '').upper())
+                    except Exception as e:
+                        logger.debug(f"Error reading customNodes.json: {e}")
+
                 # Group keys by tens digit (first hex digit)
                 grouped_keys = {}
                 for key in unused_keys:
@@ -192,6 +206,21 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/prefix A1`")
                 return
 
+            # Check customNodes.json first
+            custom_name = None
+            if os.path.exists("customNodes.json"):
+                try:
+                    with open("customNodes.json", 'r') as f:
+                        custom_data = json.load(f)
+                        for node in custom_data.get('data', []):
+                            if node.get('prefix', '').upper() == hex_prefix:
+                                custom_name = node.get('name', 'Unknown')
+                                message = f"⏳ {hex_prefix} is in the **WAITING LIST**\n\n**Repeater Name:** {custom_name}\n*This prefix has been reserved*"
+                                await ctx.respond(message)
+                                return
+                except Exception as e:
+                    logger.debug(f"Error reading customNodes.json: {e}")
+
             # Get unused keys
             unused_keys = bridge.get_unused_keys(days=self.days)
 
@@ -203,28 +232,31 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
 
                 if repeaters and len(repeaters) > 0:
                     repeater = repeaters[0]  # Get the first repeater
-                    name = repeater.get('name', 'Unknown')
-                    last_seen = repeater.get('last_seen', 'Unknown')
-                    location = repeater.get('location', {}) or {}
-                    lat = location.get('latitude', 0) if location else 0
-                    lon = location.get('longitude', 0) if location else 0
+                    if not isinstance(repeater, dict):
+                        message = f"❌ {hex_prefix} is **NOT AVAILABLE** (data error)"
+                    else:
+                        name = repeater.get('name', 'Unknown')
+                        last_seen = repeater.get('last_seen', 'Unknown')
+                        location = repeater.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
+                        lat = location.get('latitude', 0)
+                        lon = location.get('longitude', 0)
 
-                    # Format last_seen timestamp
-                    formatted_last_seen = "Unknown"
-                    if last_seen != 'Unknown':
-                        try:
-                            last_seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
-                            formatted_last_seen = last_seen_dt.strftime("%B %d, %Y %I:%M %p")
-                        except Exception:
-                            formatted_last_seen = "Invalid timestamp"
+                        # Format last_seen timestamp
+                        formatted_last_seen = "Unknown"
+                        if last_seen != 'Unknown':
+                            try:
+                                last_seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                                formatted_last_seen = last_seen_dt.strftime("%B %d, %Y %I:%M %p")
+                            except Exception:
+                                formatted_last_seen = "Invalid timestamp"
 
-                    message = f"❌ {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
-                    message += f" Name: {name}\n"
-                    message += f" Last Seen: {formatted_last_seen}\n"
-                    message += f" Location: {lat}, {lon}"
+                        message = f"❌ {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
+                        message += f" Name: {name}\n"
+                        message += f" Last Seen: {formatted_last_seen}\n"
+                        message += f" Location: {lat}, {lon}"
 
-                    if len(repeaters) > 1:
-                        message += f"\n\n*Note: {len(repeaters)} repeater(s) found with this prefix*"
+                        if len(repeaters) > 1:
+                            message += f"\n\n*Note: {len(repeaters)} repeater(s) found with this prefix*"
                 else:
                     message = f"❌ {hex_prefix} is **NOT AVAILABLE** (already in use)"
 
@@ -259,11 +291,15 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                 if len(repeaters) == 1:
                     # Single repeater - show detailed info
                     repeater = repeaters[0]
+                    if not isinstance(repeater, dict):
+                        await ctx.respond(f"Error: Invalid repeater data")
+                        return
+
                     name = repeater.get('name', 'Unknown')
                     last_seen = repeater.get('last_seen', 'Unknown')
-                    location = repeater.get('location', {}) or {}
-                    lat = location.get('latitude', 0) if location else 0
-                    lon = location.get('longitude', 0) if location else 0
+                    location = repeater.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
+                    lat = location.get('latitude', 0)
+                    lon = location.get('longitude', 0)
 
                     # Format last_seen timestamp
                     formatted_last_seen = "Unknown"
@@ -279,11 +315,14 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                     # Multiple repeaters - show summary
                     message = f"Found {len(repeaters)} repeater(s) with prefix {hex_prefix}:\n\n"
                     for i, repeater in enumerate(repeaters, 1):
+                        if not isinstance(repeater, dict):
+                            continue
+
                         name = repeater.get('name', 'Unknown')
                         last_seen = repeater.get('last_seen', 'Unknown')
-                        location = repeater.get('location', {}) or {}
-                        lat = location.get('latitude', 0) if location else 0
-                        lon = location.get('longitude', 0) if location else 0
+                        location = repeater.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
+                        lat = location.get('latitude', 0)
+                        lon = location.get('longitude', 0)
 
                         # Format last_seen timestamp
                         formatted_last_seen = "Unknown"
@@ -302,6 +341,126 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
         except Exception as e:
             logger.error(f"Error in stats command: {e}")
             await ctx.respond("Error retrieving repeater stats.")
+
+
+@client.register()
+class AddRepeaterCommand(lightbulb.SlashCommand, name="add",
+    description="Add a repeater to the waiting list"):
+
+    prefix = lightbulb.string('prefix', 'Hex prefix (e.g., A1)')
+    name = lightbulb.string('name', 'Repeater name')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Add a custom repeater to customNodes.json"""
+        try:
+            prefix = self.prefix.upper().strip()
+
+            # Validate hex format
+            if len(prefix) != 2 or not all(c in '0123456789ABCDEF' for c in prefix):
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`")
+                return
+
+            name = self.name.strip()
+
+            # Load existing customNodes.json or create new structure
+            custom_nodes_file = "customNodes.json"
+            if os.path.exists(custom_nodes_file):
+                with open(custom_nodes_file, 'r') as f:
+                    custom_data = json.load(f)
+            else:
+                custom_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "data": []
+                }
+
+            # Check if prefix already exists
+            existing_node = None
+            for node in custom_data['data']:
+                if node.get('prefix', '').upper() == prefix:
+                    existing_node = node
+                    break
+
+            # Create node entry
+            node_entry = {
+                "prefix": prefix,
+                "name": name,
+                "added_at": datetime.now().isoformat()
+            }
+
+            if existing_node:
+                # Update existing entry
+                existing_node['name'] = name
+                existing_node['updated_at'] = datetime.now().isoformat()
+                message = f"✅ Updated repeater {prefix} with name: **{name}**"
+            else:
+                # Add new entry
+                custom_data['data'].append(node_entry)
+                message = f"✅ Added repeater {prefix}: **{name}**"
+
+            # Update timestamp
+            custom_data['timestamp'] = datetime.now().isoformat()
+
+            # Save to file
+            with open(custom_nodes_file, 'w') as f:
+                json.dump(custom_data, f, indent=2)
+
+            await ctx.respond(message)
+        except Exception as e:
+            logger.error(f"Error in add command: {e}")
+            await ctx.respond(f"❌ Error adding repeater: {str(e)}")
+
+
+@client.register()
+class RemoveRepeaterCommand(lightbulb.SlashCommand, name="remove",
+    description="Remove a repeater from the waiting list"):
+
+    prefix = lightbulb.string('prefix', 'Hex prefix to remove (e.g., A1)')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Remove a repeater from customNodes.json"""
+        try:
+            prefix = self.prefix.upper().strip()
+
+            # Validate hex format
+            if len(prefix) != 2 or not all(c in '0123456789ABCDEF' for c in prefix):
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`")
+                return
+
+            # Load existing customNodes.json
+            custom_nodes_file = "customNodes.json"
+            if not os.path.exists(custom_nodes_file):
+                await ctx.respond(f"Error: list does not exist)")
+                return
+
+            with open(custom_nodes_file, 'r') as f:
+                custom_data = json.load(f)
+
+            # Find the entry to remove
+            initial_count = len(custom_data['data'])
+            custom_data['data'] = [
+                node for node in custom_data['data']
+                if node.get('prefix', '').upper() != prefix
+            ]
+            removed_count = initial_count - len(custom_data['data'])
+
+            if removed_count == 0:
+                await ctx.respond(f"❌ {prefix} is not on the waiting list")
+                return
+
+            # Update timestamp
+            custom_data['timestamp'] = datetime.now().isoformat()
+
+            # Save to file
+            with open(custom_nodes_file, 'w') as f:
+                json.dump(custom_data, f, indent=2)
+
+            message = f"✅ Removed repeater {prefix} from the waiting list"
+            await ctx.respond(message)
+        except Exception as e:
+            logger.error(f"Error in remove command: {e}")
+            await ctx.respond(f"Error removing repeater: {str(e)}")
 
 
 @client.register()
@@ -336,9 +495,12 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/dupes` - Get list of duplicate repeater prefixes
 `/prefix <hex>` - Check if a hex prefix is available
 `/stats <hex>` - Get detailed stats of a repeater by hex prefix
+`/add <prefix> <name>` - Add a repeater to the waiting list
+`/remove <prefix>` - Remove a repeater from the waiting list
 `/help` - Show this help message
 
-*All commands accept an optional `days` parameter (default: 7 days)*"""
+*All commands accept an optional `days` parameter (default: 7 days)*
+*Data is refreshed every 30 minutes on the hour"""
 
             await ctx.respond(help_message)
         except Exception as e:
