@@ -344,15 +344,15 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
 
 
 @client.register()
-class AddRepeaterCommand(lightbulb.SlashCommand, name="add",
-    description="Add a repeater to the waiting list"):
+class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
+    description="Reserve a hex prefix for a repeater"):
 
     prefix = lightbulb.string('prefix', 'Hex prefix (e.g., A1)')
     name = lightbulb.string('name', 'Repeater name')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
-        """Add a custom repeater to customNodes.json"""
+        """Reserve a hex prefix for a repeater"""
         try:
             prefix = self.prefix.upper().strip()
 
@@ -363,20 +363,20 @@ class AddRepeaterCommand(lightbulb.SlashCommand, name="add",
 
             name = self.name.strip()
 
-            # Load existing customNodes.json or create new structure
-            custom_nodes_file = "customNodes.json"
-            if os.path.exists(custom_nodes_file):
-                with open(custom_nodes_file, 'r') as f:
-                    custom_data = json.load(f)
+            # Load existing reservedNodes.json or create new structure
+            reserved_nodes_file = "reservedNodes.json"
+            if os.path.exists(reserved_nodes_file):
+                with open(reserved_nodes_file, 'r') as f:
+                    reserved_data = json.load(f)
             else:
-                custom_data = {
+                reserved_data = {
                     "timestamp": datetime.now().isoformat(),
                     "data": []
                 }
 
             # Check if prefix already exists
             existing_node = None
-            for node in custom_data['data']:
+            for node in reserved_data['data']:
                 if node.get('prefix', '').upper() == prefix:
                     existing_node = node
                     break
@@ -395,31 +395,31 @@ class AddRepeaterCommand(lightbulb.SlashCommand, name="add",
                 message = f"✅ Updated repeater {prefix} with name: **{name}**"
             else:
                 # Add new entry
-                custom_data['data'].append(node_entry)
-                message = f"✅ Added repeater {prefix}: **{name}**"
+                reserved_data['data'].append(node_entry)
+                message = f"✅ Reserved hex prefix {prefix} for repeater: **{name}**"
 
             # Update timestamp
-            custom_data['timestamp'] = datetime.now().isoformat()
+            reserved_data['timestamp'] = datetime.now().isoformat()
 
             # Save to file
-            with open(custom_nodes_file, 'w') as f:
-                json.dump(custom_data, f, indent=2)
+            with open(reserved_nodes_file, 'w') as f:
+                json.dump(reserved_data, f, indent=2)
 
             await ctx.respond(message)
         except Exception as e:
-            logger.error(f"Error in add command: {e}")
-            await ctx.respond(f"❌ Error adding repeater: {str(e)}")
+            logger.error(f"Error in reserve command: {e}")
+            await ctx.respond(f"❌ Error reserving hex prefix for repeater: {str(e)}")
 
 
 @client.register()
-class RemoveRepeaterCommand(lightbulb.SlashCommand, name="remove",
-    description="Remove a repeater from the waiting list"):
+class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
+    description="Release a hex prefix for a repeater"):
 
     prefix = lightbulb.string('prefix', 'Hex prefix to remove (e.g., A1)')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
-        """Remove a repeater from customNodes.json"""
+        """Release a hex prefix for a repeater"""
         try:
             prefix = self.prefix.upper().strip()
 
@@ -429,38 +429,38 @@ class RemoveRepeaterCommand(lightbulb.SlashCommand, name="remove",
                 return
 
             # Load existing customNodes.json
-            custom_nodes_file = "customNodes.json"
-            if not os.path.exists(custom_nodes_file):
+            reserved_nodes_file = "reservedNodes.json"
+            if not os.path.exists(reserved_nodes_file):
                 await ctx.respond(f"Error: list does not exist)")
                 return
 
-            with open(custom_nodes_file, 'r') as f:
-                custom_data = json.load(f)
+            with open(reserved_nodes_file, 'r') as f:
+                reserved_data = json.load(f)
 
             # Find the entry to remove
-            initial_count = len(custom_data['data'])
-            custom_data['data'] = [
-                node for node in custom_data['data']
+            initial_count = len(reserved_data['data'])
+            reserved_data['data'] = [
+                node for node in reserved_data['data']
                 if node.get('prefix', '').upper() != prefix
             ]
-            removed_count = initial_count - len(custom_data['data'])
+            removed_count = initial_count - len(reserved_data['data'])
 
             if removed_count == 0:
-                await ctx.respond(f"❌ {prefix} is not on the waiting list")
+                await ctx.respond(f"❌ {prefix} is not reserved for a repeater")
                 return
 
             # Update timestamp
-            custom_data['timestamp'] = datetime.now().isoformat()
+            reserved_data['timestamp'] = datetime.now().isoformat()
 
             # Save to file
-            with open(custom_nodes_file, 'w') as f:
-                json.dump(custom_data, f, indent=2)
+            with open(reserved_nodes_file, 'w') as f:
+                json.dump(reserved_data, f, indent=2)
 
-            message = f"✅ Removed repeater {prefix} from the waiting list"
+            message = f"✅ Released hex prefix {prefix}"
             await ctx.respond(message)
         except Exception as e:
-            logger.error(f"Error in remove command: {e}")
-            await ctx.respond(f"Error removing repeater: {str(e)}")
+            logger.error(f"Error in release command: {e}")
+            await ctx.respond(f"Error releasing hex prefix: {str(e)}")
 
 
 @client.register()
@@ -495,8 +495,8 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/dupes` - Get list of duplicate repeater prefixes
 `/prefix <hex>` - Check if a hex prefix is available
 `/stats <hex>` - Get detailed stats of a repeater by hex prefix
-`/add <prefix> <name>` - Add a repeater to the waiting list
-`/remove <prefix>` - Remove a repeater from the waiting list
+`/reserve <prefix> <name>` - Reserve a hex prefix for a repeater
+`/release <prefix>` - Release a hex prefix from the reserve list
 `/help` - Show this help message
 
 *All commands accept an optional `days` parameter (default: 7 days)*
