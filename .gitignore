@@ -4,6 +4,9 @@ credentials.json
 nodes.json
 updated.json
 customNodes.json
+reservedNodes.json
+removedNodes.json
+channels/
 __pycache__/
 meshbuddy/
 venv/
