@@ -204,9 +204,9 @@ def get_repeater_duplicates(days=7, data_dir=None):
     return duplicate_list
 
 
-def get_repeater_offline(days=8, data_dir=None):
-    """Show repeaters that haven't been heard in 2 days"""
-    # Get repeaters that are 2-8 days old
+def get_repeater_offline(days=14, data_dir=None):
+    """Show repeaters that haven't been heard in 3 days"""
+    # Get repeaters that are 3-14 days old
     devices = extract_device_types(device_types=['repeaters'], days=days, data_dir=data_dir)
 
     if devices is None:
@@ -214,12 +214,12 @@ def get_repeater_offline(days=8, data_dir=None):
 
     repeaters = devices['repeaters']
 
-    # Filter to only those that are 2+ days old
+    # Filter to only those that are 3+ days old
     offline_data = [contact for contact in repeaters
-                    if is_within_window(contact, min_days=2, max_days=days)]
+                    if is_within_window(contact, min_days=3, max_days=days)]
 
     if offline_data:
-        print(f"Found {len(offline_data)} offline repeaters (last seen 2-{days} days ago):")
+        print(f"Found {len(offline_data)} offline repeaters (last seen 3-{days} days ago):")
 
         offline_list = []
         for contact in offline_data:
@@ -244,7 +244,7 @@ def get_repeater_offline(days=8, data_dir=None):
 
         return offline_list
     else:
-        print(f"No offline repeaters found (no repeaters last seen 2-{days} days ago)")
+        print(f"No offline repeaters found (no repeaters last seen 3-{days} days ago)")
         return []
 
 
@@ -257,9 +257,32 @@ def get_unused_keys(days=7, data_dir=None):
 
     repeaters = devices['repeaters']
 
-    # Get all currently used prefixes
+    # Load removed nodes to exclude them
+    import os
+    import json
+    removed_set = set()
+    removed_nodes_file = os.path.join(data_dir, "removedNodes.json") if data_dir else "removedNodes.json"
+    if os.path.exists(removed_nodes_file):
+        try:
+            with open(removed_nodes_file, 'r') as f:
+                removed_data = json.load(f)
+                for node in removed_data.get('data', []):
+                    node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
+                    node_name = node.get('name', '').strip()
+                    if node_prefix and node_name:
+                        removed_set.add((node_prefix, node_name))
+        except Exception:
+            pass
+
+    # Get all currently used prefixes (excluding removed nodes)
     used_keys = set()
     for contact in repeaters:
+        # Skip removed nodes
+        contact_prefix = contact.get('public_key', '')[:2].upper() if contact.get('public_key') else ''
+        contact_name = contact.get('name', '').strip()
+        if (contact_prefix, contact_name) in removed_set:
+            continue
+
         if contact.get('public_key'):
             prefix = contact.get('public_key', '')[:2]
             used_keys.add(prefix.upper())  # Convert to uppercase for consistency
