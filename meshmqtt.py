@@ -201,8 +201,8 @@ class MeshMQTTBridge():
         from helpers import get_repeater_duplicates
         return get_repeater_duplicates(days, self.data_dir)
 
-    def get_repeater_offline(self, days=8):
-        """Show repeaters that haven't been heard in 2 days"""
+    def get_repeater_offline(self, days=14):
+        """Show repeaters that haven't been heard in 3 days"""
         from helpers import get_repeater_offline
         return get_repeater_offline(days, self.data_dir)
 
