@@ -2,9 +2,7 @@
 
 import hikari
 import lightbulb
-import configparser
 import logging
-import sys
 import asyncio
 import json
 import os
