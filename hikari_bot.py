@@ -6,6 +6,7 @@ import logging
 import asyncio
 import json
 import os
+import time
 from datetime import datetime
 from meshmqtt import MeshMQTTBridge
 from helpers import extract_device_types, load_config
@@ -27,22 +28,221 @@ bridge = MeshMQTTBridge()
 
 EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
 pending_remove_selections = {}
+known_node_keys = set()  # Track known node public_keys
+
+# Cache for server emojis
+server_emojis_cache = {}
+emoji_name_to_string = {}  # Cache for formatted emoji strings
+
+async def initialize_emojis(channel_id: int = None):
+    """Pre-load emojis when bot starts"""
+    global server_emojis_cache, emoji_name_to_string
+
+    try:
+        # Get channel ID from config if not provided
+        if channel_id is None:
+            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
+
+        if not channel_id:
+            logger.warning("No channel_id available to initialize emojis")
+            return
+
+        channel_id_int = int(channel_id)
+        channel = await bot.rest.fetch_channel(channel_id_int)
+        guild_id = channel.guild_id
+
+        if not guild_id:
+            logger.warning(f"Channel {channel_id_int} has no guild_id")
+            return
+
+        # Fetch all emojis for the guild
+        try:
+            emojis = await bot.rest.fetch_guild_emojis(guild_id)
+            server_emojis_cache[guild_id] = {emoji.name: emoji for emoji in emojis}
+
+            # Log all available emoji names for debugging
+            all_emoji_names = list(server_emojis_cache[guild_id].keys())
+            logger.info(f"Available emojis in server ({len(all_emoji_names)} total): {', '.join(all_emoji_names[:50])}")
+            if len(all_emoji_names) > 50:
+                logger.info(f"... and {len(all_emoji_names) - 50} more")
+
+            # Pre-format emoji strings for known emojis
+            emoji_names = ["meshBuddy_new", "meshBuddy_salute", "WCMESH"]
+            for name in emoji_names:
+                # Try exact match first
+                emoji = server_emojis_cache[guild_id].get(name)
+                # Try case-insensitive match if exact match fails
+                if not emoji:
+                    for emoji_name, emoji_obj in server_emojis_cache[guild_id].items():
+                        if emoji_name.lower() == name.lower():
+                            emoji = emoji_obj
+                            logger.info(f"Found emoji '{name}' as '{emoji_name}' (case-insensitive match)")
+                            break
+
+                if emoji:
+                    # Use proper Discord format: <:name:id> or <a:name:id> for animated
+                    if emoji.is_animated:
+                        emoji_name_to_string[name] = f"<a:{emoji.name}:{emoji.id}>"
+                    else:
+                        emoji_name_to_string[name] = f"<:{emoji.name}:{emoji.id}>"
+                    logger.info(f"Initialized emoji: {name} -> {emoji_name_to_string[name]}")
+                else:
+                    logger.warning(f"Emoji '{name}' not found during initialization. Searching emojis with similar names...")
+                    # Try to find similar names
+                    for emoji_name in all_emoji_names:
+                        if 'mesh' in emoji_name.lower() or 'buddy' in emoji_name.lower() or 'new' in emoji_name.lower() or 'salute' in emoji_name.lower() or 'wcmesh' in emoji_name.lower():
+                            logger.info(f"  Found similar emoji: '{emoji_name}'")
+
+            logger.info(f"Initialized {len(emojis)} emojis for guild {guild_id}")
+        except Exception as e:
+            logger.error(f"Error initializing emojis: {e}")
+    except Exception as e:
+        logger.error(f"Error in initialize_emojis: {e}")
+
+async def get_server_emoji(channel_id: int, emoji_name: str) -> str:
+    """Get a Discord server emoji by name, with caching"""
+    global server_emojis_cache, emoji_name_to_string
+
+    # Check pre-initialized cache first
+    if emoji_name in emoji_name_to_string:
+        return emoji_name_to_string[emoji_name]
+
+    # Check config for manual emoji ID override
+    config_key = f"emoji_{emoji_name.lower()}_id"
+    emoji_id = config.get("discord", config_key, fallback=None)
+    if emoji_id:
+        # Assume non-animated, can add animated flag to config if needed
+        return f"<:{emoji_name}:{emoji_id}>"
+
+    try:
+        channel_id_int = int(channel_id)
+
+        # Try to get guild_id from channel (via REST API)
+        try:
+            channel = await bot.rest.fetch_channel(channel_id_int)
+            guild_id = channel.guild_id
+
+            if not guild_id:
+                logger.warning(f"Channel {channel_id_int} has no guild_id (might be DM)")
+                return f":{emoji_name}:"
+
+            # If not in cache, try REST API
+            if guild_id not in server_emojis_cache:
+                try:
+                    emojis = await bot.rest.fetch_guild_emojis(guild_id)
+                    server_emojis_cache[guild_id] = {emoji.name: emoji for emoji in emojis}
+                    logger.info(f"Fetched and cached {len(emojis)} emojis for guild {guild_id}")
+
+                    # Cache the formatted string for this emoji
+                    emoji = server_emojis_cache[guild_id].get(emoji_name)
+                    # Try case-insensitive match if exact match fails
+                    if not emoji:
+                        for name, emoji_obj in server_emojis_cache[guild_id].items():
+                            if name.lower() == emoji_name.lower():
+                                emoji = emoji_obj
+                                break
+
+                    if emoji:
+                        if emoji.is_animated:
+                            emoji_name_to_string[emoji_name] = f"<a:{emoji.name}:{emoji.id}>"
+                        else:
+                            emoji_name_to_string[emoji_name] = f"<:{emoji.name}:{emoji.id}>"
+                        return emoji_name_to_string[emoji_name]
+                except Exception as e:
+                    logger.error(f"Error fetching emojis from REST API: {e}")
+                    return f":{emoji_name}:"
+            else:
+                # Find emoji by name in our cache
+                emoji = server_emojis_cache[guild_id].get(emoji_name)
+                # Try case-insensitive match if exact match fails
+                if not emoji:
+                    for name, emoji_obj in server_emojis_cache[guild_id].items():
+                        if name.lower() == emoji_name.lower():
+                            emoji = emoji_obj
+                            break
+
+                if emoji:
+                    # Cache the formatted string
+                    if emoji.is_animated:
+                        emoji_name_to_string[emoji_name] = f"<a:{emoji.name}:{emoji.id}>"
+                    else:
+                        emoji_name_to_string[emoji_name] = f"<:{emoji.name}:{emoji.id}>"
+                    return emoji_name_to_string[emoji_name]
+
+            # Emoji not found - log available ones for debugging
+            if guild_id in server_emojis_cache:
+                available_names = list(server_emojis_cache[guild_id].keys())
+                logger.warning(f"Emoji '{emoji_name}' not found. Available emojis: {', '.join(available_names[:20])}")
+
+            return f":{emoji_name}:"
+
+        except Exception as e:
+            logger.error(f"Error getting channel/guild: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return f":{emoji_name}:"
+
+    except Exception as e:
+        logger.error(f"Error getting server emoji '{emoji_name}': {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return f":{emoji_name}:"
 
 def get_removed_nodes_set():
     """Load removedNodes.json and return a set of (prefix, name) tuples for quick lookup"""
     removed_set = set()
     removed_nodes_file = "removedNodes.json"
-    if os.path.exists(removed_nodes_file):
+
+    if not os.path.exists(removed_nodes_file):
+        return removed_set
+
+    # Retry logic to handle race conditions when file is being written
+    max_retries = 3
+    retry_delay = 0.1  # seconds (shorter delay for synchronous function)
+
+    for attempt in range(max_retries):
         try:
+            # Check if file is empty before trying to parse
+            if os.path.getsize(removed_nodes_file) == 0:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    return removed_set
+
             with open(removed_nodes_file, 'r') as f:
-                removed_data = json.load(f)
+                content = f.read().strip()
+                if not content:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        return removed_set
+
+                # Parse JSON from content string
+                removed_data = json.loads(content)
                 for node in removed_data.get('data', []):
                     node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
                     node_name = node.get('name', '').strip()
                     if node_prefix and node_name:
                         removed_set.add((node_prefix, node_name))
+                return removed_set  # Success
+
+        except json.JSONDecodeError as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.debug(f"Error reading removedNodes.json: {e}")
+                return removed_set
         except Exception as e:
-            logger.debug(f"Error reading removedNodes.json: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.debug(f"Error reading removedNodes.json: {e}")
+                return removed_set
+
     return removed_set
 
 def is_node_removed(contact):
@@ -194,6 +394,156 @@ async def periodic_channel_update():
             # Wait 60 seconds before retrying on error
             await asyncio.sleep(60)
 
+async def check_for_new_nodes():
+    """Check nodes.json for new nodes and send Discord notifications"""
+    global known_node_keys
+
+    try:
+        nodes_file = "nodes.json"
+        if not os.path.exists(nodes_file):
+            logger.warning(f"{nodes_file} not found - skipping node check")
+            return
+
+        # Retry logic to handle race conditions when file is being written
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                # Check if file is empty before trying to parse
+                if os.path.getsize(nodes_file) == 0:
+                    if attempt < max_retries - 1:
+                        logger.debug(f"{nodes_file} is empty, retrying in {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.warning(f"{nodes_file} is empty after {max_retries} attempts - skipping")
+                        return
+
+                with open(nodes_file, 'r') as f:
+                    content = f.read().strip()
+                    if not content:
+                        if attempt < max_retries - 1:
+                            logger.debug(f"{nodes_file} appears empty, retrying in {retry_delay}s...")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        else:
+                            logger.warning(f"{nodes_file} is empty after {max_retries} attempts - skipping")
+                            return
+
+                    # Parse JSON
+                    nodes_data = json.loads(content)
+                    break  # Success, exit retry loop
+
+            except json.JSONDecodeError as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"Error parsing {nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    # Last attempt failed, raise the error
+                    raise
+
+        current_node_keys = set()
+        current_nodes_map = {}  # Map public_key to full node data
+
+        # Extract all current node keys and create a map
+        for node in nodes_data.get('data', []):
+            public_key = node.get('public_key')
+            if public_key:
+                current_node_keys.add(public_key)
+                current_nodes_map[public_key] = node
+
+        # If this is the first check, initialize known_node_keys
+        if not known_node_keys:
+            known_node_keys = current_node_keys.copy()
+            logger.info(f"Initialized node watcher with {len(known_node_keys)} existing nodes")
+            return
+
+        # Find new nodes
+        new_node_keys = current_node_keys - known_node_keys
+
+        if new_node_keys:
+            logger.info(f"Found {len(new_node_keys)} new node(s)")
+
+            # Get channel ID from config
+            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
+            if not channel_id:
+                logger.warning("No messenger_channel_id specified in config.ini - skipping new node notification")
+            else:
+                # Send notification for each new node
+                for public_key in new_node_keys:
+                    node = current_nodes_map.get(public_key)
+                    if not node:
+                        continue
+
+                    # Format node information
+                    node_name = node.get('name', 'Unknown')
+                    device_role = node.get('device_role', 0)
+                    prefix = public_key[:2].upper() if public_key else '??'
+
+                    # Device role mapping: 1 = Companion, 2 = Repeater
+                    role_names = {1: "Companion", 2: "Repeater"}
+                    role_name = role_names.get(device_role, f"Unknown ({device_role})")
+
+                    # Get location if available
+                    location = node.get('location')
+                    location_str = ""
+                    if location:
+                        lat = location.get('latitude', 0)
+                        lon = location.get('longitude', 0)
+                        if lat and lon:
+                            location_str = f"\n📍 Location: {lat}, {lon}"
+
+                    # Get last seen timestamp
+                    last_seen = node.get('last_seen', 'Unknown')
+                    last_seen_str = ""
+                    if last_seen and last_seen != 'Unknown':
+                        try:
+                            last_seen_dt = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
+                            last_seen_str = f"\n🕐 Last Seen: {last_seen_dt.strftime('%B %d, %Y %I:%M %p')}"
+                        except Exception:
+                            pass
+
+                    # Fetch server emojis
+                    emoji_new = await get_server_emoji(int(channel_id), "meshBuddy_new")
+                    emoji_salute = await get_server_emoji(int(channel_id), "meshBuddy_salute")
+                    emoji_wcmesh = await get_server_emoji(int(channel_id), "WCMESH")
+
+                    if node.get('device_role') == 2:
+                        message = f"## {emoji_new}  **NEW REPEATER ALERT**\n**{prefix}: {node_name}** has expanded our mesh!\nThank you for your service {emoji_salute}"
+                    elif node.get('device_role') == 1:
+                        message = f"## {emoji_new}  **NEW COMPANION ALERT**\nSay hi to **{node_name}** on West Coast Mesh {emoji_wcmesh} 927.875"
+
+                    try:
+                        await bot.rest.create_message(int(channel_id), content=message)
+                        logger.info(f"Sent notification for new node: {prefix} - {node_name}")
+                    except Exception as e:
+                        logger.error(f"Error sending new node notification: {e}")
+
+            # Update known_node_keys
+            known_node_keys = current_node_keys.copy()
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing nodes.json: {e}")
+    except Exception as e:
+        logger.error(f"Error checking for new nodes: {e}")
+
+async def periodic_node_watcher():
+    """Periodically check for new nodes in nodes.json"""
+    # Wait a bit for the bot to fully start
+    await asyncio.sleep(10)
+
+    while True:
+        try:
+            await check_for_new_nodes()
+            # Check every 30 seconds
+            await asyncio.sleep(30)
+        except Exception as e:
+            logger.error(f"Error in periodic node watcher: {e}")
+            # Wait 60 seconds before retrying on error
+            await asyncio.sleep(60)
+
 async def send_long_message(ctx, header, lines, footer=None, max_length=2000):
     """Send a message that may exceed Discord's character limit by splitting into multiple messages"""
     if not lines:
@@ -290,8 +640,15 @@ async def send_long_message(ctx, header, lines, footer=None, max_length=2000):
 # Start periodic updates when bot starts
 @bot.listen()
 async def on_starting(event: hikari.StartingEvent):
-    """Start periodic channel updates when bot starts"""
+    """Start periodic channel updates and node watcher when bot starts"""
+    # Initialize emojis after a short delay to ensure bot is ready
+    async def init_emojis_delayed():
+        await asyncio.sleep(5)  # Wait for bot to be fully ready
+        await initialize_emojis()
+
+    asyncio.create_task(init_emojis_delayed())
     asyncio.create_task(periodic_channel_update())
+    asyncio.create_task(periodic_node_watcher())
 
 @client.register()
 class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
@@ -328,9 +685,9 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                         if last_seen:
                             ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
                             days_ago = (now - ls).days
-                            if days_ago > 12:
+                            if days_ago >= 12:
                                 lines.append(f"🔴 {prefix}: {name}") # red
-                            elif days_ago > 3:
+                            elif days_ago >= 3:
                                 lines.append(f"🟡 {prefix}: {name}") # yellow
                             else:
                                 lines.append(f"🟢 {prefix}: {name}")
@@ -368,7 +725,7 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
 class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
     description="Get list of offline repeaters"):
 
-    days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
+    days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -392,9 +749,9 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
                         if last_seen:
                             ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
                             days_ago = (now - ls).days
-                            if days_ago > 12:
+                            if days_ago >= 12:
                                 lines.append(f"🔴 {prefix}: {name} (last seen: {days_ago} days ago)") # red
-                            elif days_ago > 3:
+                            elif days_ago >= 3:
                                 lines.append(f"🟡 {prefix}: {name} (last seen: {days_ago} days ago)") # yellow
                     except Exception:
                         pass
@@ -1001,12 +1358,12 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
         try:
             help_message = """**Available Bot Commands:**
 
-`/list` - Get list of active repeaters*
-`/offline` - Get list of offline repeaters (>3 days no advert)*
-`/open` - Get list of unused hex keys*
-`/dupes` - Get list of duplicate repeater prefixes*
-`/prefix <hex>` - Check if a hex prefix is available*
-`/stats <hex>` - Get detailed stats of a repeater by hex prefix*
+`/list`* - Get list of active repeaters
+`/offline` - Get list of offline repeaters (>3 days no advert)
+`/open`* - Get list of unused hex keys
+`/dupes`* - Get list of duplicate repeater prefixes
+`/prefix <hex>`* - Check if a hex prefix is available
+`/stats <hex>`* - Get detailed stats of a repeater by hex prefix
 `/reserve <prefix> <name>` - Reserve a hex prefix for a repeater
 `/release <prefix>` - Release a hex prefix from the reserve list
 `/remove <hex>` - Remove a repeater from the repeater list

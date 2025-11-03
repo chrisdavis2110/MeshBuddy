@@ -2,6 +2,7 @@ config.ini
 token.json
 credentials.json
 nodes.json
+mqttnodes.json
 updated.json
 customNodes.json
 reservedNodes.json
@@ -11,3 +12,4 @@ __pycache__/
 meshbuddy/
 venv/
 update_summary.txt
+placeholder.txt
