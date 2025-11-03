@@ -1,0 +1,15 @@
+[Unit]
+Description=MeshCore Node Removal Service
+After=network.target nodewatcher.service
+Requires=nodewatcher.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/MeshBuddy
+ExecStart=/home/ubuntu/MeshBuddy/meshbuddy/bin/python /home/ubuntu/MeshBuddy/node_watcher.py --watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

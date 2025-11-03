@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meshbuddy.nodewatcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/chris/Documents/VSCode/meshcore/MeshBuddy/meshbuddy/bin/python</string>
+        <string>/Users/chris/Documents/VSCode/meshcore/MeshBuddy/node_watcher.py</string>
+        <string>--watch</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/chris/Documents/VSCode/meshcore/MeshBuddy</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/chris/Documents/VSCode/meshcore/MeshBuddy/logs/node_watcher.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/chris/Documents/VSCode/meshcore/MeshBuddy/logs/node_watcher.error.log</string>
+</dict>
+</plist>
