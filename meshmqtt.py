@@ -2,9 +2,6 @@
 
 import json
 import logging
-import configparser
-import sys
-import requests
 import os
 import shutil
 from datetime import datetime
@@ -13,9 +10,16 @@ from helpers import (
     load_data_from_json,
     compare_data,
     extract_device_types,
-    is_within_window,
     get_data_from_mqtt,
-    load_config
+    load_config,
+    get_companion_list,
+    get_room_server_list,
+    get_repeater_list,
+    get_repeater_duplicates,
+    get_repeater_offline,
+    get_unused_keys,
+    get_repeater,
+    get_first_repeater
 )
 
 # Initialize logging (console only)
@@ -145,7 +149,9 @@ class MeshMQTTBridge():
             print(f"Removed contacts ({len(comparison_result.get('removed_contacts', []))}):")
             summary_lines.append(f"Removed contacts ({len(comparison_result.get('removed_contacts', []))}):")
             for key in comparison_result['removed_contacts']:
-                line = f"- {key}"
+                # Display only first 2 characters for readability
+                prefix = key[:2] if len(key) >= 2 else key
+                line = f"- {prefix}"
                 print(line)
                 summary_lines.append(line)
 
@@ -183,40 +189,32 @@ class MeshMQTTBridge():
 
     def get_companion_list(self, days=7):
         """Get list of companions using the new extraction function"""
-        from helpers import get_companion_list
         return get_companion_list(days, self.data_dir)
 
     def get_room_server_list(self, days=7):
         """Get list of room servers using the new extraction function"""
-        from helpers import get_room_server_list
         return get_room_server_list(days, self.data_dir)
 
     def get_repeater_list(self, days=7):
         """Get list of repeaters using the new extraction function"""
-        from helpers import get_repeater_list
         return get_repeater_list(days, self.data_dir)
 
     def get_repeater_duplicates(self, days=7):
         """Get repeater duplicates using the new extraction function"""
-        from helpers import get_repeater_duplicates
         return get_repeater_duplicates(days, self.data_dir)
 
     def get_repeater_offline(self, days=14):
         """Show repeaters that haven't been heard in 3 days"""
-        from helpers import get_repeater_offline
         return get_repeater_offline(days, self.data_dir)
 
     def get_unused_keys(self, days=7):
         """Show which hex keys from 00 to FF are not currently being used"""
-        from helpers import get_unused_keys
         return get_unused_keys(days, self.data_dir)
 
     def get_repeater(self, prefix, days=7):
         """Get all repeater info by prefix - handles multiple repeaters with same prefix"""
-        from helpers import get_repeater
         return get_repeater(prefix, days, self.data_dir)
 
     def get_first_repeater(self, prefix, days=7):
         """Get the first repeater info by prefix (for backward compatibility)"""
-        from helpers import get_first_repeater
         return get_first_repeater(prefix, days, self.data_dir)

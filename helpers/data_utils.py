@@ -85,16 +85,18 @@ def compare_data(new_data, old_data=None):
     # Extract key-name pairs from old data
     for contact in old_contacts:
         if isinstance(contact, dict):
-            key = contact.get('public_key', '')[:2]
+            key = contact.get('public_key', '').upper() if contact.get('public_key') else ''
             name = contact.get('name', '')
-            old_key_name_pairs[key] = name
+            if key:
+                old_key_name_pairs[key] = name
 
     # Extract key-name pairs from new data
     for contact in new_contacts:
         if isinstance(contact, dict):
-            key = contact.get('public_key', '')[:2]
+            key = contact.get('public_key', '').upper() if contact.get('public_key') else ''
             name = contact.get('name', '')
-            new_key_name_pairs[key] = name
+            if key:
+                new_key_name_pairs[key] = name
 
     # Find differences
     old_keys = set(old_key_name_pairs.keys())
@@ -108,7 +110,7 @@ def compare_data(new_data, old_data=None):
     key_count = {}
     for contact in new_contacts:
         if isinstance(contact, dict) and contact.get('device_role') == 2:
-            key = contact.get('public_key', '')[:2]
+            key = contact.get('public_key', '').upper() if contact.get('public_key') else ''
             if key:
                 key_count[key] = key_count.get(key, 0) + 1
 
@@ -119,10 +121,11 @@ def compare_data(new_data, old_data=None):
             # Add all repeater contacts with this duplicate key
             for contact in new_contacts:
                 if isinstance(contact, dict) and contact.get('device_role') == 2:
-                    contact_key = contact.get('public_key', '')[:2]
+                    contact_key = contact.get('public_key', '').upper() if contact.get('public_key') else ''
                     if contact_key == key:
                         name = contact.get('name', 'Unknown')
-                        duplicate_keys.append((key, name))  # Store tuple of (prefix, name)
+                        # Store tuple of (prefix for display, name)
+                        duplicate_keys.append((key[:2], name))
 
     # Sort duplicate keys by key prefix
     duplicate_keys.sort(key=lambda x: x[0])
@@ -131,8 +134,8 @@ def compare_data(new_data, old_data=None):
     new_contacts_list = []
     for contact in new_contacts:
         if isinstance(contact, dict):
-            key = contact.get('public_key', '')[:2]
-            if key in newly_added_keys:
+            key = contact.get('public_key', '')[:2].upper() if contact.get('public_key') else ''
+            if key and key in newly_added_keys:
                 new_contacts_list.append(contact)
         else:
             if str(contact) in newly_added_keys:
