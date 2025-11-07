@@ -35,6 +35,7 @@ class NodeWatcher:
 
     def __init__(self):
         self.known_node_keys: Set[str] = set()
+        self.known_nodes_map: Dict[str, Dict] = {}  # Store full node data for missing node tracking
         self.last_file_mtime = 0
         self.processed_lines = 0
 
@@ -262,12 +263,12 @@ class NodeWatcher:
         except Exception as e:
             logger.error(f"Error saving {REMOVED_NODES_FILE}: {e}")
 
-    def get_node_hex_prefix(self, node: Dict) -> Optional[str]:
-        """Extract hex prefix (first 2 chars) from node's public_key"""
-        public_key = node.get('public_key', '')
-        if public_key and len(public_key) >= 2:
-            return public_key[:2].upper()
-        return None
+    # def get_node_hex_prefix(self, node: Dict) -> Optional[str]:
+    #     """Extract hex prefix from node's public_key"""
+    #     public_key = node.get('public_key', '')
+    #     if public_key and len(public_key) >= 2:
+    #         return public_key.upper()
+    #     return None
 
     def is_node_recently_seen(self, node: Dict, days: int = RECENT_DAYS) -> bool:
         """Check if a node has been seen recently (within the last N days)"""
@@ -298,67 +299,110 @@ class NodeWatcher:
                 current_node_keys.add(public_key)
                 current_nodes_map[public_key] = node
 
-        # If this is the first check, initialize known_node_keys
+        # If this is the first check, initialize known_node_keys and known_nodes_map
         if not self.known_node_keys:
             self.known_node_keys = current_node_keys.copy()
+            self.known_nodes_map = current_nodes_map.copy()
             logger.info(f"Initialized node watcher with {len(self.known_node_keys)} existing nodes")
+            # Still check reserved nodes even on first run
+        else:
+            # Find keys that have disappeared (were seen before but not now)
+            missing_keys = self.known_node_keys - current_node_keys
+            if missing_keys:
+                logger.info(f"Found {len(missing_keys)} node(s) that are no longer in nodes.json")
+                # Add missing nodes to removed list
+                self._add_missing_nodes_to_removed(missing_keys)
+
+        # Load reserved nodes
+        reserved_data = self.load_reserved_nodes()
+        if not reserved_data:
+            self.known_node_keys = current_node_keys.copy()
             return
 
-        # Find new nodes
-        new_node_keys = current_node_keys - self.known_node_keys
-
-        if new_node_keys:
-            logger.info(f"Found {len(new_node_keys)} new node(s)")
-
-            # Load reserved nodes
-            reserved_data = self.load_reserved_nodes()
-            if not reserved_data:
-                return
-
-            reserved_list = reserved_data.get('data', [])
-            if not reserved_list:
-                # No reserved nodes, nothing to check
-                self.known_node_keys = current_node_keys.copy()
-                return
-
-            # Collect hex prefixes of new repeaters
-            new_repeater_hexes = set()
-            for public_key in new_node_keys:
-                node = current_nodes_map.get(public_key)
-                if not node:
-                    continue
-
-                # Only process repeaters (device_role == 2)
-                if node.get('device_role') != 2:
-                    continue
-
-                node_hex = self.get_node_hex_prefix(node)
-                if node_hex:
-                    new_repeater_hexes.add(node_hex)
-
-            # Remove reserved nodes that match any new repeater hex
-            if new_repeater_hexes:
-                updated_reserved_list = []
-                removed_any = False
-
-                for reserved_node in reserved_list:
-                    reserved_prefix = reserved_node.get('prefix', '').upper()
-                    if reserved_prefix in new_repeater_hexes:
-                        logger.info(f"New repeater {reserved_prefix} detected - removing from reserved list: {reserved_node.get('name', 'Unknown')}")
-                        removed_any = True
-                        # Don't add to updated_reserved_list (remove it)
-                    else:
-                        updated_reserved_list.append(reserved_node)
-
-                if removed_any:
-                    reserved_data['data'] = updated_reserved_list
-                    self.save_reserved_nodes(reserved_data)
-
-            # Update known_node_keys
+        reserved_list = reserved_data.get('data', [])
+        if not reserved_list:
+            # No reserved nodes, nothing to check
             self.known_node_keys = current_node_keys.copy()
-        else:
-            # No new nodes, but still update known_node_keys in case nodes were removed externally
-            self.known_node_keys = current_node_keys.copy()
+            return
+
+        # Check all current repeaters against reserved nodes
+        # Match by: public_key prefix (first 2 chars) AND name must match
+        updated_reserved_list = []
+        removed_any = False
+
+        for reserved_node in reserved_list:
+            reserved_prefix = reserved_node.get('prefix', '').upper()
+            reserved_name = reserved_node.get('name', '').strip()
+
+            # Check if any current repeater matches this reserved node
+            matched = False
+            for public_key, node in current_nodes_map.items():
+                node_prefix = public_key.upper()[:2] if len(public_key) >= 2 else ''
+                node_name = node.get('name', '').strip()
+
+                # Match if both prefix and name are the same
+                if node_prefix == reserved_prefix and node_name == reserved_name and node.get('device_role') == 2:
+                    logger.info(f"Repeater with public_key {public_key[:2].upper()} and name '{node_name}' matches reserved entry - removing from reserved list")
+                    removed_any = True
+                    matched = True
+                    break
+
+            if not matched:
+                # Keep this reserved node in the list
+                updated_reserved_list.append(reserved_node)
+
+        if removed_any:
+            reserved_data['data'] = updated_reserved_list
+            self.save_reserved_nodes(reserved_data)
+
+        # Update known_node_keys and known_nodes_map
+        self.known_node_keys = current_node_keys.copy()
+        self.known_nodes_map = current_nodes_map.copy()
+
+    def _add_missing_nodes_to_removed(self, missing_keys: Set[str]):
+        """Add nodes that are no longer in nodes.json to the removed list"""
+        if not missing_keys:
+            return
+
+        # Load removed nodes
+        removed_data = self.load_removed_nodes()
+        if not removed_data:
+            removed_data = {
+                "timestamp": datetime.now().isoformat(),
+                "data": []
+            }
+
+        removed_list = removed_data.get('data', [])
+        removed_public_keys = {node.get('public_key', '') for node in removed_list if node.get('public_key')}
+
+        # Get full node data from known_nodes_map for missing nodes
+        nodes_to_add = []
+        for missing_key in missing_keys:
+            if missing_key not in removed_public_keys:
+                # Get the full node data from when we last saw it
+                known_node = self.known_nodes_map.get(missing_key)
+                if known_node:
+                    # Use the full node data
+                    node_entry = known_node.copy()
+                    nodes_to_add.append(node_entry)
+                    removed_public_keys.add(missing_key)
+                    node_name = known_node.get('name', 'Unknown')
+                    logger.info(f"Node with public_key {missing_key[:8]} ({node_name}) is no longer in nodes.json - adding to removed list")
+                else:
+                    # Fallback if we don't have the node data
+                    node_entry = {
+                        "public_key": missing_key,
+                        "name": "Unknown",
+                    }
+                    nodes_to_add.append(node_entry)
+                    removed_public_keys.add(missing_key)
+                    logger.info(f"Node with public_key {missing_key[:8]} is no longer in nodes.json - adding to removed list (no previous data)")
+
+        if nodes_to_add:
+            removed_list.extend(nodes_to_add)
+            removed_data['data'] = removed_list
+            self.save_removed_nodes(removed_data)
+            logger.info(f"Added {len(nodes_to_add)} missing node(s) to {REMOVED_NODES_FILE}")
 
     def check_removed_nodes_for_recent_activity(self, nodes_data: Dict):
         """Check if any removed nodes have advertised recently and remove them from removed list"""
@@ -393,7 +437,7 @@ class NodeWatcher:
 
                 # Check if it's been seen recently
                 if self.is_node_recently_seen(current_node):
-                    node_hex = self.get_node_hex_prefix(current_node)
+                    node_hex = current_node.get('public_key', '')[:2].upper() if current_node.get('public_key') else ''
                     node_name = current_node.get('name', 'Unknown')
                     logger.info(f"Removed node {node_hex}: {node_name} has advertised recently - removing from removed list")
                     removed_any = True
@@ -453,7 +497,7 @@ class NodeWatcher:
                 days_since_seen = (now - last_seen).days
 
                 if days_since_seen > REMOVAL_THRESHOLD_DAYS:
-                    node_hex = self.get_node_hex_prefix(node)
+                    node_hex = public_key[:2].upper() if len(public_key) >= 2 else ''
                     node_name = node.get('name', 'Unknown')
                     logger.info(f"Repeater {node_hex}: {node_name} has not been seen in {days_since_seen} days (>14 days) - adding to removedNodes")
                     nodes_to_add.append(node)

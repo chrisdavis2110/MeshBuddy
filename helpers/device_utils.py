@@ -3,6 +3,8 @@ Device utilities for device type extraction and filtering.
 """
 
 import logging
+import os
+import json
 from datetime import datetime
 from .data_utils import load_data_from_json
 
@@ -70,6 +72,12 @@ def extract_device_types(data=None, device_types=None, days=7, data_dir=None):
     for contact in contacts:
         if not isinstance(contact, dict):
             continue
+
+        # Normalize field names: handle both 'role'/'device_role' and 'last_heard'/'last_seen'
+        if 'role' in contact and 'device_role' not in contact:
+            contact['device_role'] = contact['role']
+        if 'last_heard' in contact and 'last_seen' not in contact:
+            contact['last_seen'] = contact['last_heard']
 
         # Check if device is within the specified time window
         if not is_within_window(contact, min_days=0, max_days=days):
@@ -173,7 +181,7 @@ def get_repeater_duplicates(days=7, data_dir=None):
         for prefix in duplicate_prefixes:
             # Get all repeaters with this prefix
             prefix_repeaters = [contact for contact in repeaters
-                              if contact.get('public_key', '')[:2] == prefix]
+                              if (contact.get('public_key', '') if contact.get('public_key') else '??')[:2] == prefix]
 
             # Check if repeaters have different names
             names = [contact.get('name', 'Unknown') for contact in prefix_repeaters]
@@ -258,8 +266,6 @@ def get_unused_keys(days=7, data_dir=None):
     repeaters = devices['repeaters']
 
     # Load removed nodes to exclude them
-    import os
-    import json
     removed_set = set()
     removed_nodes_file = os.path.join(data_dir, "removedNodes.json") if data_dir else "removedNodes.json"
     if os.path.exists(removed_nodes_file):
@@ -267,7 +273,7 @@ def get_unused_keys(days=7, data_dir=None):
             with open(removed_nodes_file, 'r') as f:
                 removed_data = json.load(f)
                 for node in removed_data.get('data', []):
-                    node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
+                    node_prefix = node.get('public_key', '').upper() if node.get('public_key') else ''
                     node_name = node.get('name', '').strip()
                     if node_prefix and node_name:
                         removed_set.add((node_prefix, node_name))
@@ -278,14 +284,25 @@ def get_unused_keys(days=7, data_dir=None):
     used_keys = set()
     for contact in repeaters:
         # Skip removed nodes
-        contact_prefix = contact.get('public_key', '')[:2].upper() if contact.get('public_key') else ''
+        contact_prefix = contact.get('public_key', '').upper() if contact.get('public_key') else ''
         contact_name = contact.get('name', '').strip()
         if (contact_prefix, contact_name) in removed_set:
             continue
 
-        if contact.get('public_key'):
-            prefix = contact.get('public_key', '')[:2]
-            used_keys.add(prefix.upper())  # Convert to uppercase for consistency
+        used_keys.add(contact_prefix[:2].upper())  # Convert to uppercase for consistency
+
+    reserved_set = set()
+    reserved_nodes_file = os.path.join(data_dir, "reservedNodes.json") if data_dir else "reservedNodes.json"
+    if os.path.exists(reserved_nodes_file):
+        try:
+            with open(reserved_nodes_file, 'r') as f:
+                reserved_data = json.load(f)
+                for node in reserved_data.get('data', []):
+                    prefix = node.get('prefix', '').upper()
+                    if prefix:
+                        reserved_set.add(prefix)
+        except Exception as e:
+            logger.debug(f"Error reading reservedNodes.json: {e}")
 
     # Generate all possible hex keys from 00 to FF
     all_possible_keys = set()
@@ -294,7 +311,7 @@ def get_unused_keys(days=7, data_dir=None):
         all_possible_keys.add(hex_key)
 
     # Find unused keys
-    unused_keys = all_possible_keys - used_keys - set(['00', 'FF'])  # Exclude '00' and 'FF'
+    unused_keys = all_possible_keys - used_keys - reserved_set - set(['00', 'FF'])  # Exclude '00' and 'FF'
 
     if unused_keys:
         # Sort the unused keys for consistent output
@@ -340,6 +357,7 @@ def get_repeater(prefix, days=7, data_dir=None):
 
     for i, contact in enumerate(matching_repeaters, 1):
         name = contact.get('name', 'Unknown')
+        public_key = contact.get('public_key', 'Unknown')
         last_seen = contact.get('last_seen', 'Unknown')
         location = contact.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
         lat = location.get('latitude', 0)
@@ -356,6 +374,7 @@ def get_repeater(prefix, days=7, data_dir=None):
 
         print(f"Repeater #{i}:")
         print(f"- Name: {name}")
+        print(f"- Key: {public_key}")
         print(f"- Last Seen: {formatted_last_seen}")
         print(f"- Location: {lat}, {lon}")
         print()
