@@ -1661,8 +1661,8 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 
 `/list`* - Get list of active repeaters
 `/offline` - Get list of offline repeaters (>3 days no advert)
-`/open`* - Get list of unused hex keys
 `/dupes`* - Get list of duplicate repeater prefixes
+`/open`* - Get list of unused hex keys
 `/prefix <hex>`* - Check if a hex prefix is available
 `/stats <hex>`* - Get detailed stats of a repeater by hex prefix
 `/qr <hex>` - Generate a QR code for adding a contact
