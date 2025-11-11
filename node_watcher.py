@@ -11,7 +11,7 @@ import os
 import logging
 import time
 from datetime import datetime
-from typing import Set, Dict, List, Optional
+from typing import Set, Dict, Optional
 
 # Initialize logging
 logging.basicConfig(
@@ -262,13 +262,6 @@ class NodeWatcher:
             logger.info(f"Updated {REMOVED_NODES_FILE}")
         except Exception as e:
             logger.error(f"Error saving {REMOVED_NODES_FILE}: {e}")
-
-    # def get_node_hex_prefix(self, node: Dict) -> Optional[str]:
-    #     """Extract hex prefix from node's public_key"""
-    #     public_key = node.get('public_key', '')
-    #     if public_key and len(public_key) >= 2:
-    #         return public_key.upper()
-    #     return None
 
     def is_node_recently_seen(self, node: Dict, days: int = RECENT_DAYS) -> bool:
         """Check if a node has been seen recently (within the last N days)"""

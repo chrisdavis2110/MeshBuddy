@@ -4,15 +4,28 @@ Data utilities for JSON file operations and data management.
 
 import json
 import os
-import shutil
 import logging
 from datetime import datetime
+from .config_utils import load_config
+
+config = load_config()
 
 logger = logging.getLogger(__name__)
 
 
+def get_data_dir(data_dir=None):
+    if data_dir:
+        data_dir = os.path.abspath(data_dir)
+    else:
+        data_dir = os.path.abspath(os.getcwd())
+
+    # Ensure data directory exists
+    os.makedirs(data_dir, exist_ok=True)
+    return data_dir
+
 def save_data_to_json(data, filename="nodes.json", data_dir=None):
     """Save data to JSON file with timestamp"""
+    data_dir = get_data_dir(data_dir)
     try:
         # Sort data by public_key before saving
         if isinstance(data, list):
@@ -44,6 +57,7 @@ def save_data_to_json(data, filename="nodes.json", data_dir=None):
 
 def load_data_from_json(filename="nodes.json", data_dir=None):
     """Load data from JSON file"""
+    data_dir = get_data_dir(data_dir)
     try:
         # Determine file path
         if data_dir:
