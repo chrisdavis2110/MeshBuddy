@@ -22,7 +22,6 @@ from .device_utils import (
     is_within_window
 )
 from .config_utils import load_config
-from .mesh_utils import get_data_from_mqtt
 
 __all__ = [
     # Data utilities
@@ -43,8 +42,5 @@ __all__ = [
     'is_within_window',
 
     # Config utilities
-    'load_config',
-
-    # Mesh utilities
-    'get_data_from_mqtt'
+    'load_config'
 ]

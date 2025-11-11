@@ -6,7 +6,7 @@ import logging
 import os
 import json
 from datetime import datetime
-from .data_utils import load_data_from_json
+from .data_utils import get_data_dir, load_data_from_json
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,8 @@ def extract_device_types(data=None, device_types=None, days=7, data_dir=None):
     Returns:
         dict: Dictionary with device types as keys and lists of devices as values
     """
+    data_dir = get_data_dir(data_dir)
+
     # Load data if not provided
     if data is None:
         data = load_data_from_json(data_dir=data_dir)

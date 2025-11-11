@@ -12,8 +12,7 @@ import urllib.parse
 from datetime import datetime
 import qrcode
 from concurrent.futures import ThreadPoolExecutor
-from meshmqtt import MeshMQTTBridge
-from helpers import extract_device_types, load_config
+from helpers import extract_device_types, load_config, load_data_from_json, get_unused_keys, get_repeater
 
 # Initialize logging (console only)
 logging.basicConfig(
@@ -28,7 +27,6 @@ config = load_config("config.ini")
 bot = hikari.GatewayBot(config.get("discord", "devtoken"))
 client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
-bridge = MeshMQTTBridge()
 
 EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
 pending_remove_selections = {}
@@ -452,7 +450,7 @@ async def update_repeater_channel_name():
             return
 
         # Get device counts
-        data = bridge.load_data_from_json()
+        data = load_data_from_json()
         devices = extract_device_types(data, ['repeaters'], days=7)
 
         if devices is None:
@@ -574,31 +572,7 @@ async def check_for_new_nodes():
 
                     # Format node information
                     node_name = node.get('name', 'Unknown')
-                    device_role = node.get('device_role', 0)
                     prefix = public_key[:2].upper() if public_key else '??'
-
-                    # Device role mapping: 1 = Companion, 2 = Repeater
-                    role_names = {1: "Companion", 2: "Repeater"}
-                    role_name = role_names.get(device_role, f"Unknown ({device_role})")
-
-                    # Get location if available
-                    location = node.get('location')
-                    location_str = ""
-                    if location:
-                        lat = location.get('latitude', 0)
-                        lon = location.get('longitude', 0)
-                        if lat and lon:
-                            location_str = f"\n📍 Location: {lat}, {lon}"
-
-                    # Get last seen timestamp
-                    last_seen = node.get('last_seen', 'Unknown')
-                    last_seen_str = ""
-                    if last_seen and last_seen != 'Unknown':
-                        try:
-                            last_seen_dt = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
-                            last_seen_str = f"\n🕐 Last Seen: {last_seen_dt.strftime('%B %d, %Y %I:%M %p')}"
-                        except Exception:
-                            pass
 
                     # Fetch server emojis
                     emoji_new = await get_server_emoji(int(channel_id), "meshBuddy_new")
@@ -648,8 +622,6 @@ async def send_long_message(ctx, header, lines, footer=None, max_length=2000):
         await ctx.respond(message)
         return
 
-    # Calculate lengths
-    header_len = len(header) + 1  # +1 for newline after header
     footer_len = len(footer) + 2 if footer else 0  # +2 for \n\n before footer
 
     # Split lines into chunks
@@ -753,12 +725,30 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of active repeaters"""
         try:
-            devices = bridge.extract_device_types(device_types=['repeaters'], days=self.days)
-            if devices is None:
+            # Load all repeaters directly from nodes.json instead of using time-filtered extract_device_types
+            # This ensures all nodes are shown, and we filter by days in the display logic
+            data = load_data_from_json("nodes.json")
+            if data is None:
                 await ctx.respond("Error retrieving repeater list.")
                 return
 
-            repeaters = devices.get('repeaters', [])
+            contacts = data.get("data", []) if isinstance(data, dict) else data
+            if not isinstance(contacts, list):
+                await ctx.respond("Error retrieving repeater list.")
+                return
+
+            # Filter to repeaters only and normalize field names
+            repeaters = []
+            for contact in contacts:
+                if not isinstance(contact, dict):
+                    continue
+                # Normalize field names
+                normalize_node(contact)
+                # Only include repeaters (device_role == 2)
+                if contact.get('device_role') == 2:
+                    repeaters.append(contact)
+
+            # Filter out removed nodes
             repeaters = [r for r in repeaters if not is_node_removed(r)]
 
             # Track active repeater prefixes to avoid duplicates
@@ -774,18 +764,32 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                     name = contact.get('name', 'Unknown')
                     active_prefixes.add(prefix.upper())
                     last_seen = contact.get('last_seen')
-                    try:
-                        if last_seen:
+
+                    # Check if within the specified days window
+                    within_window = False
+                    days_ago = None
+
+                    if last_seen:
+                        try:
                             ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
                             days_ago = (now - ls).days
-                            if days_ago >= 12:
-                                lines.append(f"🔴 {prefix}: {name} ({days_ago} days ago)") # red
-                            elif days_ago >= 3:
-                                lines.append(f"🟡 {prefix}: {name} ({days_ago} days ago)") # yellow
-                            else:
-                                lines.append(f"🟢 {prefix}: {name}")
-                    except Exception:
-                        pass
+                            within_window = days_ago <= self.days
+                        except Exception as e:
+                            logger.debug(f"Error parsing last_seen for {prefix}: {e}")
+                            # If we can't parse the timestamp, still show the node but mark it
+                            within_window = True  # Show it anyway
+
+                    # Only show nodes within the specified days window
+                    if within_window or days_ago is None:
+                        if days_ago is None:
+                            # No valid last_seen timestamp
+                            lines.append(f"⚪ {prefix}: {name} (no timestamp)")
+                        elif days_ago >= 12:
+                            lines.append(f"🔴 {prefix}: {name} ({days_ago} days ago)") # red
+                        elif days_ago >= 3:
+                            lines.append(f"🟡 {prefix}: {name} ({days_ago} days ago)") # yellow
+                        else:
+                            lines.append(f"🟢 {prefix}: {name}")
 
             # Add reserved nodes that aren't already active
             if os.path.exists("reservedNodes.json"):
@@ -824,7 +828,7 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of offline repeaters"""
         try:
-            devices = bridge.extract_device_types(device_types=['repeaters'], days=self.days)
+            devices = extract_device_types(device_types=['repeaters'], days=self.days)
             if devices is None:
                 await ctx.respond("Error retrieving offline repeaters.")
                 return
@@ -869,7 +873,7 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of unused hex keys"""
         try:
-            unused_keys = bridge.get_unused_keys(days=self.days)
+            unused_keys = get_unused_keys(days=self.days)
             if unused_keys:
                 # Group keys by tens digit (first hex digit)
                 grouped_keys = {}
@@ -905,7 +909,7 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of duplicate repeater prefixes"""
         try:
-            devices = bridge.extract_device_types(device_types=['repeaters'], days=self.days)
+            devices = extract_device_types(device_types=['repeaters'], days=self.days)
             if devices is None:
                 await ctx.respond("Error retrieving duplicate prefixes.")
                 return
@@ -984,13 +988,13 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                     logger.debug(f"Error reading reservedNodes.json: {e}")
 
             # Get unused keys
-            unused_keys = bridge.get_unused_keys(days=self.days)
+            unused_keys = get_unused_keys(days=self.days)
 
             if unused_keys and hex_prefix in unused_keys:
                 message = f"✅ {hex_prefix} is **AVAILABLE** for use!"
             else:
                 # Get repeater information for the prefix
-                repeaters = bridge.get_repeater(hex_prefix, days=self.days)
+                repeaters = get_repeater(hex_prefix, days=self.days)
 
                 # Filter out removed nodes
                 if repeaters:
@@ -1002,19 +1006,6 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                         message = f"❌ {hex_prefix} is **NOT AVAILABLE** (data error)"
                     else:
                         name = repeater.get('name', 'Unknown')
-                        last_seen = repeater.get('last_seen', 'Unknown')
-                        location = repeater.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
-                        lat = location.get('latitude', 0)
-                        lon = location.get('longitude', 0)
-
-                        # Format last_seen timestamp
-                        formatted_last_seen = "Unknown"
-                        if last_seen != 'Unknown':
-                            try:
-                                last_seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
-                                formatted_last_seen = last_seen_dt.strftime("%B %d, %Y %I:%M %p")
-                            except Exception:
-                                formatted_last_seen = "Invalid timestamp"
 
                         message = f"❌ {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
                         message += f"Name: {name}\n"
@@ -1049,7 +1040,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                 return
 
             # Get repeaters (now returns a list)
-            repeaters = bridge.get_repeater(hex_prefix, days=self.days)
+            repeaters = get_repeater(hex_prefix, days=self.days)
 
             # Filter out removed nodes
             if repeaters:
@@ -1060,7 +1051,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                     # Single repeater - show detailed info
                     repeater = repeaters[0]
                     if not isinstance(repeater, dict):
-                        await ctx.respond(f"Error: Invalid repeater data")
+                        await ctx.respond("Error: Invalid repeater data")
                         return
 
                     name = repeater.get('name', 'Unknown')
@@ -1069,6 +1060,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                     location = repeater.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
                     lat = location.get('latitude', 0)
                     lon = location.get('longitude', 0)
+                    battery = repeater.get('battery_voltage', 0)
 
                     # Format last_seen timestamp
                     formatted_last_seen = "Unknown"
@@ -1079,7 +1071,10 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                         except Exception:
                             formatted_last_seen = "Invalid timestamp"
 
-                    message = f"Repeater {hex_prefix}:\nName: {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}"
+                    message = f"Repeater {hex_prefix}:\nName: {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n"
+
+                    if battery != 0:
+                        message += f"Battery Voltage: {battery} V\n"
                 else:
                     # Multiple repeaters - show summary
                     message = f"Found {len(repeaters)} repeater(s) with prefix {hex_prefix}:\n\n"
@@ -1093,6 +1088,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                         location = repeater.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
                         lat = location.get('latitude', 0)
                         lon = location.get('longitude', 0)
+                        battery = repeater.get('battery_voltage', 0)
 
                         # Format last_seen timestamp
                         formatted_last_seen = "Unknown"
@@ -1103,7 +1099,10 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                             except Exception:
                                 formatted_last_seen = "Invalid timestamp"
 
-                        message += f"**#{i}:** {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n\n"
+                        message += f"**#{i}:** {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n"
+                        if battery != 0:
+                            message += f"Battery Voltage: {battery} V\n"
+                        message += "\n"
             else:
                 message = f"No repeater found with prefix {hex_prefix}."
 
@@ -1156,7 +1155,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                 return
 
             # Check if prefix is currently in use by an active repeater
-            unused_keys = bridge.get_unused_keys(days=7)
+            unused_keys = get_unused_keys(days=7)
             if unused_keys is None:
                 await ctx.respond("Error: Could not check prefix availability. Please try again.")
                 return
@@ -1164,7 +1163,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
             # Check if prefix is in unused keys (available for reservation)
             if hex_prefix not in unused_keys:
                 # Prefix is currently in use - get repeater info to show who's using it
-                repeaters = bridge.get_repeater(hex_prefix, days=7)
+                repeaters = get_repeater(hex_prefix, days=7)
                 if repeaters:
                     # Filter out removed nodes
                     repeaters = [r for r in repeaters if not is_node_removed(r)]
@@ -1227,7 +1226,7 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             # Load existing customNodes.json
             reserved_nodes_file = "reservedNodes.json"
             if not os.path.exists(reserved_nodes_file):
-                await ctx.respond(f"Error: list does not exist)")
+                await ctx.respond("Error: list does not exist)")
                 return
 
             with open(reserved_nodes_file, 'r') as f:
@@ -1458,7 +1457,7 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
                 return
 
             # Get repeaters (now returns a list)
-            repeaters = bridge.get_repeater(hex_prefix)
+            repeaters = get_repeater(hex_prefix)
 
             # Filter out removed nodes
             if repeaters:
@@ -1645,7 +1644,7 @@ class KeygenCommand(lightbulb.SlashCommand, name="keygen",
             logger.error(traceback.format_exc())
             try:
                 await ctx.interaction.edit_initial_response(f"❌ Error generating keypair: {str(e)}")
-            except:
+            except Exception as e:
                 await ctx.respond(f"❌ Error generating keypair: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 

@@ -4,7 +4,6 @@ Mesh-specific utilities for mesh network operations.
 
 import logging
 import requests
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

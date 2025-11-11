@@ -11,7 +11,7 @@ import os
 import logging
 import time
 from datetime import datetime
-from typing import Set, Dict, List, Optional
+from typing import Set, Dict, Optional
 
 # Initialize logging
 logging.basicConfig(
