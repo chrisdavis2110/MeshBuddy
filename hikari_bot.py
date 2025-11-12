@@ -1577,8 +1577,43 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
             else:
                 await ctx.respond("No repeaters found.")
         except Exception as e:
-            logger.error(f"Error in rlist command: {e}")
+            logger.error(f"Error in xlist command: {e}")
             await ctx.respond("Error retrieving removed list.")
+
+
+@client.register()
+class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
+    description="Get list of reserved repeaters"):
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Get list of reserved repeaters"""
+        try:
+            lines = []
+
+            if os.path.exists("reservedNodes.json"):
+                try:
+                    with open("reservedNodes.json", 'r') as f:
+                        reserved_data = json.load(f)
+                        for node in reserved_data.get('data', []):
+                            prefix = node.get('prefix', '').upper() if node.get('prefix') else ''
+                            name = node.get('name', 'Unknown')
+                            if prefix and name:
+                                lines.append(f"⏳ {prefix}: {name}")
+                except Exception as e:
+                    logger.debug(f"Error reading reservedNodes.json: {e}")
+
+            lines.sort(key=extract_prefix_for_sort)
+
+            if lines:
+                header = "Reserved Nodes:"
+                footer = f"Total Reserved: {len(lines)}"
+                await send_long_message(ctx, header, lines, footer)
+            else:
+                await ctx.respond("No reserved nodes found.")
+        except Exception as e:
+            logger.error(f"Error in rlist command: {e}")
+            await ctx.respond("Error retrieving reserved list.")
 
 
 @client.register()
@@ -1667,6 +1702,7 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/dupes`* - Get list of duplicate repeater prefixes
 `/open`* - Get list of unused hex keys
 `/prefix <hex>`* - Check if a hex prefix is available
+`/rlist` - Get list of reserved repeaters
 `/stats <hex>`* - Get detailed stats of a repeater by hex prefix
 `/qr <hex>` - Generate a QR code for adding a contact
 `/reserve <prefix> <name>` - Reserve a hex prefix for a repeater
