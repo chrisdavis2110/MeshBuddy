@@ -7,7 +7,7 @@ Requires=nodewatcher.service
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/MeshBuddy
-ExecStart=/home/ubuntu/MeshBuddy/meshbuddy/bin/python /home/ubuntu/MeshBuddy/node_watcher.py --watch
+ExecStart=/home/ubuntu/MeshBuddy/venv/bin/python /home/ubuntu/MeshBuddy/node_watcher.py --watch
 Restart=always
 RestartSec=10
 
