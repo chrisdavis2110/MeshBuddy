@@ -452,20 +452,65 @@ async def update_repeater_channel_name():
             logger.warning("No channel_id specified in config.ini - skipping channel name update")
             return
 
-        # Get device counts
-        data = load_data_from_json()
-        devices = extract_device_types(data, ['repeaters'], days=7)
-
-        if devices is None:
+        # Load all repeaters directly from nodes.json (not filtered by days)
+        data = load_data_from_json("nodes.json")
+        if data is None:
             logger.warning("Could not get device data - skipping channel name update")
             return
 
-        repeaters = devices.get('repeaters', [])
-        repeaters = [r for r in repeaters if not is_node_removed(r)]
-        repeater_count = len(repeaters)
+        contacts = data.get("data", []) if isinstance(data, dict) else data
+        if not isinstance(contacts, list):
+            logger.warning("Invalid data format - skipping channel name update")
+            return
 
-        # Format channel name with count
-        channel_name = f"Total Repeaters: {repeater_count}"
+        # Filter to repeaters only and normalize field names
+        repeaters = []
+        for contact in contacts:
+            if not isinstance(contact, dict):
+                continue
+            # Normalize field names
+            normalize_node(contact)
+            # Only include repeaters (device_role == 2)
+            if contact.get('device_role') == 2:
+                repeaters.append(contact)
+
+        # Filter out removed nodes
+        repeaters = [r for r in repeaters if not is_node_removed(r)]
+
+        # Categorize repeaters as online/offline based on last_seen
+        now = datetime.now().astimezone()
+        online_count = 0
+        offline_count = 0
+
+        for repeater in repeaters:
+            last_seen = repeater.get('last_seen')
+            if last_seen:
+                try:
+                    ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
+                    days_ago = (now - ls).days
+                    if days_ago < 3:
+                        online_count += 1
+                    else:
+                        offline_count += 1
+                except Exception:
+                    # If we can't parse the timestamp, count as offline
+                    offline_count += 1
+            else:
+                # No last_seen timestamp, count as offline
+                offline_count += 1
+
+        # Count reserved repeaters
+        reserved_count = 0
+        if os.path.exists("reservedNodes.json"):
+            try:
+                with open("reservedNodes.json", 'r') as f:
+                    reserved_data = json.load(f)
+                    reserved_count = len(reserved_data.get('data', []))
+            except Exception as e:
+                logger.debug(f"Error reading reservedNodes.json: {e}")
+
+        # Format channel name with counts
+        channel_name = f"🟢 {online_count} 🟡 {offline_count} ⏳ {reserved_count}"
 
         # Update channel name
         await bot.rest.edit_channel(int(channel_id), name=channel_name)

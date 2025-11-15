@@ -26,7 +26,7 @@ NODES_FILE = "nodes.json"
 RESERVED_NODES_FILE = "reservedNodes.json"
 REMOVED_NODES_FILE = "removedNodes.json"
 CHECK_INTERVAL = 60  # Check every 60 seconds
-RECENT_DAYS = 1  # Consider "recently advertised" if last_seen within 7 days
+RECENT_DAYS = 1  # Consider "recently advertised" if last_seen within 1 day
 REMOVAL_THRESHOLD_DAYS = 14  # Add nodes to removedNodes if not seen in 14+ days
 
 
@@ -274,7 +274,7 @@ class NodeWatcher:
             now = datetime.now(last_seen.tzinfo)
             days_ago = (now - last_seen).days
 
-            return days_ago <= days
+            return days_ago < days
         except (ValueError, TypeError) as e:
             logger.debug(f"Error parsing last_seen timestamp '{last_seen_str}': {e}")
             return False
