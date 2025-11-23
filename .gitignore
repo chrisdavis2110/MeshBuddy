@@ -1,14 +1,9 @@
+__pycache__/
+venv/
 config.ini
 nodes.json
 updated.json
 reservedNodes.json
 removedNodes.json
-__pycache__/
-venv/
 update_summary.txt
-placeholder.txt
-*.sh
-com.*.plist
-logs/
-instructions.md
 .DS_Store
