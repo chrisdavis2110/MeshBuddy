@@ -629,14 +629,15 @@ async def check_for_new_nodes():
 
                     if node.get('device_role') == 2:
                         message = f"## {emoji_new}  **NEW REPEATER ALERT**\n**{prefix}: {node_name}** has expanded our mesh!\nThank you for your service {emoji_salute}"
+
+                        try:
+                            await bot.rest.create_message(int(channel_id), content=message)
+                            logger.info(f"Sent notification for new node: {prefix} - {node_name}")
+                        except Exception as e:
+                            logger.error(f"Error sending new node notification: {e}")
+
                     # elif node.get('device_role') == 1:
                     #     message = f"## {emoji_new}  **NEW COMPANION ALERT**\nSay hi to **{node_name}** on West Coast Mesh {emoji_wcmesh} 927.875"
-
-                    try:
-                        await bot.rest.create_message(int(channel_id), content=message)
-                        logger.info(f"Sent notification for new node: {prefix} - {node_name}")
-                    except Exception as e:
-                        logger.error(f"Error sending new node notification: {e}")
 
             # Update known_node_keys
             known_node_keys = current_node_keys.copy()
