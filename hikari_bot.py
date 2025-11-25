@@ -29,6 +29,10 @@ client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
 
 EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
+CHECK = "✅"
+CROSS = "❌"
+WARN = "⚠️"
+RESERVED = "⏳"
 pending_remove_selections = {}
 pending_qr_selections = {}  # Track pending QR code selections
 known_node_keys = set()  # Track known node public_keys
@@ -272,7 +276,7 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
         device_role = contact.get('device_role', 2)
 
         if not public_key:
-            error_msg = "❌ Error: Contact has no public key"
+            error_msg = f"{CROSS} Error: Contact has no public key"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
                 await ctx_or_interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
@@ -333,7 +337,7 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
             )
     except Exception as e:
         logger.error(f"Error generating QR code: {e}")
-        error_message = f"❌ Error generating QR code: {str(e)}"
+        error_message = f"{CROSS} Error generating QR code: {str(e)}"
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
             await ctx_or_interaction.create_initial_response(
                 hikari.ResponseType.MESSAGE_UPDATE,
@@ -386,7 +390,7 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
                 break
 
         if already_removed:
-            message = f"⚠️ Repeater {selected_prefix[:2]}: {selected_name} has already been removed"
+            message = f"{WARN} Repeater {selected_prefix[:2]}: {selected_name} has already been removed"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
                 await ctx_or_interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
@@ -405,7 +409,7 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
         with open(removed_nodes_file, 'w') as f:
             json.dump(removed_data, f, indent=2)
 
-        message = f"✅ Repeater {selected_prefix[:2]}: {selected_name} has been removed"
+        message = f"{CHECK} Repeater {selected_prefix[:2]}: {selected_name} has been removed"
 
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
             await ctx_or_interaction.create_initial_response(
@@ -481,6 +485,7 @@ async def update_repeater_channel_name():
         now = datetime.now().astimezone()
         online_count = 0
         offline_count = 0
+        dead_count = 0
 
         for repeater in repeaters:
             last_seen = repeater.get('last_seen')
@@ -488,10 +493,12 @@ async def update_repeater_channel_name():
                 try:
                     ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
                     days_ago = (now - ls).days
-                    if days_ago < 3:
-                        online_count += 1
-                    else:
+                    if days_ago >= 12:
+                        dead_count += 1
+                    elif days_ago >= 3:
                         offline_count += 1
+                    else:
+                        online_count += 1
                 except Exception:
                     # If we can't parse the timestamp, count as offline
                     offline_count += 1
@@ -510,7 +517,7 @@ async def update_repeater_channel_name():
                 logger.debug(f"Error reading reservedNodes.json: {e}")
 
         # Format channel name with counts
-        channel_name = f"🟢 {online_count} 🟡 {offline_count} ⏳ {reserved_count}"
+        channel_name = f"{CHECK} {online_count} {WARN} {offline_count} {CROSS} {dead_count} {RESERVED} {reserved_count}"
 
         # Update channel name
         await bot.rest.edit_channel(int(channel_id), name=channel_name)
@@ -530,6 +537,81 @@ async def periodic_channel_update():
             logger.error(f"Error in periodic channel update: {e}")
             # Wait 60 seconds before retrying on error
             await asyncio.sleep(60)
+
+async def check_reserved_repeater_and_add_owner(node, prefix):
+    """Check if a new repeater matches a reserved node and add to repeaterOwners.json"""
+    try:
+        # Load reservedNodes.json
+        reserved_nodes_file = "reservedNodes.json"
+        if not os.path.exists(reserved_nodes_file):
+            return
+
+        with open(reserved_nodes_file, 'r') as f:
+            reserved_data = json.load(f)
+
+        # Find matching reserved node by prefix
+        matching_reservation = None
+        for reserved_node in reserved_data.get('data', []):
+            if reserved_node.get('prefix', '').upper() == prefix:
+                matching_reservation = reserved_node
+                break
+
+        if not matching_reservation:
+            return
+
+        # Get username from reservation
+        username = matching_reservation.get('username', 'Unknown')
+        public_key = node.get('public_key', '')
+
+        if not public_key:
+            return
+
+        # Load or create repeaterowners.json
+        owners_file = "repeaterOwners.json"
+        if os.path.exists(owners_file):
+            try:
+                with open(owners_file, 'r') as f:
+                    owners_data = json.load(f)
+            except (json.JSONDecodeError, Exception):
+                owners_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "data": []
+                }
+        else:
+            owners_data = {
+                "timestamp": datetime.now().isoformat(),
+                "data": []
+            }
+
+        # Check if this public_key already exists
+        existing_owner = None
+        for owner in owners_data.get('data', []):
+            if owner.get('public_key', '').upper() == public_key.upper():
+                existing_owner = owner
+                break
+
+        if existing_owner:
+            # Already exists, skip
+            return
+
+        # Add new owner entry
+        owner_entry = {
+            "public_key": public_key,
+            "name": node.get('name', 'Unknown'),
+            "username": username
+        }
+
+        owners_data['data'].append(owner_entry)
+        owners_data['timestamp'] = datetime.now().isoformat()
+
+        # Save to file
+        with open(owners_file, 'w') as f:
+            json.dump(owners_data, f, indent=2)
+
+        logger.info(f"Added repeater owner: {username} (public_key: {public_key[:10]}...)")
+
+    except Exception as e:
+        logger.error(f"Error checking reserved repeater and adding owner: {e}")
 
 async def check_for_new_nodes():
     """Check nodes.json for new nodes and send Discord notifications"""
@@ -629,6 +711,8 @@ async def check_for_new_nodes():
 
                     if node.get('device_role') == 2:
                         message = f"## {emoji_new}  **NEW REPEATER ALERT**\n**{prefix}: {node_name}** has expanded our mesh!\nThank you for your service {emoji_salute}"
+                        # Check if this repeater matches a reserved node and add to repeaterOwners.json
+                        await check_reserved_repeater_and_add_owner(node, prefix)
 
                         try:
                             await bot.rest.create_message(int(channel_id), content=message)
@@ -834,11 +918,11 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                             # No valid last_seen timestamp
                             lines.append(f"⚪ {prefix}: {name} (no timestamp)")
                         elif days_ago >= 12:
-                            lines.append(f"🔴 {prefix}: {name} ({days_ago} days ago)") # red
+                            lines.append(f"{CROSS} {prefix}: {name} ({days_ago} days ago)") # red
                         elif days_ago >= 3:
-                            lines.append(f"🟡 {prefix}: {name} ({days_ago} days ago)") # yellow
+                            lines.append(f"{WARN} {prefix}: {name} ({days_ago} days ago)") # yellow
                         else:
-                            lines.append(f"🟢 {prefix}: {name}")
+                            lines.append(f"{CHECK} {prefix}: {name}")
 
             # Add reserved nodes that aren't already active
             if os.path.exists("reservedNodes.json"):
@@ -850,7 +934,7 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                             name = node.get('name', 'Unknown')
                             # Only add if not already in active repeaters
                             if prefix and prefix not in active_prefixes:
-                                lines.append(f"⏳ {prefix}: {name}")
+                                lines.append(f"{RESERVED} {prefix}: {name}")
                 except Exception as e:
                     logger.debug(f"Error reading reservedNodes.json: {e}")
 
@@ -896,9 +980,9 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
                             ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
                             days_ago = (now - ls).days
                             if days_ago >= 12:
-                                lines.append(f"🔴 {prefix}: {name} (last seen: {days_ago} days ago)") # red
+                                lines.append(f"{CROSS} {prefix}: {name} (last seen: {days_ago} days ago)") # red
                             elif days_ago >= 3:
-                                lines.append(f"🟡 {prefix}: {name} (last seen: {days_ago} days ago)") # yellow
+                                lines.append(f"{WARN} {prefix}: {name} (last seen: {days_ago} days ago)") # yellow
                     except Exception:
                         pass
 
@@ -987,11 +1071,11 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
                                     ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
                                     days_ago = (now - ls).days
                                     if days_ago > 12:
-                                        lines.append(f"🔴 {prefix}: {name} ({days_ago} days ago)") # red
+                                        lines.append(f"{CROSS} {prefix}: {name} ({days_ago} days ago)") # red
                                     elif days_ago > 3:
-                                        lines.append(f"🟡 {prefix}: {name} ({days_ago} days ago)") # yellow
+                                        lines.append(f"{WARN} {prefix}: {name} ({days_ago} days ago)") # yellow
                                     else:
-                                        lines.append(f"🟢 {prefix}: {name}")
+                                        lines.append(f"{CHECK} {prefix}: {name}")
                             except Exception:
                                 pass
 
@@ -1030,7 +1114,7 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                         reserved_data = json.load(f)
                         for node in reserved_data.get('data', []):
                             if node.get('prefix', '').upper() == hex_prefix:
-                                message = f"⏳ {hex_prefix} is on the **RESERVED LIST**"
+                                message = f"{RESERVED} {hex_prefix} is on the **RESERVED LIST**"
                                 await ctx.respond(message)
                                 return
                 except Exception as e:
@@ -1040,7 +1124,7 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
             unused_keys = get_unused_keys(days=self.days)
 
             if unused_keys and hex_prefix in unused_keys:
-                message = f"✅ {hex_prefix} is **AVAILABLE** for use!"
+                message = f"{CHECK} {hex_prefix} is **AVAILABLE** for use!"
             else:
                 # Get repeater information for the prefix
                 repeaters = get_repeater(hex_prefix, days=self.days)
@@ -1052,17 +1136,17 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 if repeaters and len(repeaters) > 0:
                     repeater = repeaters[0]  # Get the first repeater
                     if not isinstance(repeater, dict):
-                        message = f"❌ {hex_prefix} is **NOT AVAILABLE** (data error)"
+                        message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (data error)"
                     else:
                         name = repeater.get('name', 'Unknown')
 
-                        message = f"❌ {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
+                        message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
                         message += f"Name: {name}\n"
 
                         if len(repeaters) > 1:
                             message += f"\n\n*Note: {len(repeaters)} repeater(s) found with this prefix. use `/stats` to see them*"
                 else:
-                    message = f"❌ {hex_prefix} is **NOT AVAILABLE** (already in use)"
+                    message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (already in use)"
 
             await ctx.respond(message)
         except Exception as e:
@@ -1200,7 +1284,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                     break
 
             if existing_node:
-                await ctx.respond(f"❌ {hex_prefix} with name: **{name}** has already been reserved")
+                await ctx.respond(f"{CROSS} {hex_prefix} with name: **{name}** has already been reserved")
                 return
 
             # Check if prefix is currently in use by an active repeater
@@ -1220,27 +1304,31 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                         repeater = repeaters[0]
                         current_name = repeater.get('name', 'Unknown')
                         await ctx.respond(
-                            f"❌ Prefix {hex_prefix} is **NOT AVAILABLE** - currently in use by: **{current_name}**\n"
+                            f"{CROSS} Prefix {hex_prefix} is **NOT AVAILABLE** - currently in use by: **{current_name}**\n"
                             f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
                         )
                         return
 
                 # Prefix not in unused keys but no active repeater found (edge case)
                 await ctx.respond(
-                    f"❌ Prefix {hex_prefix} is **NOT AVAILABLE** for reservation.\n"
+                    f"{CROSS} Prefix {hex_prefix} is **NOT AVAILABLE** for reservation.\n"
                     f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
                 )
                 return
+            # Get username from context
+            username = ctx.user.username if ctx.user else "Unknown"
+
             # Create node entry
             node_entry = {
                 "prefix": hex_prefix,
                 "name": name,
+                "username": username,
                 "added_at": datetime.now().isoformat()
             }
 
             # Add new entry
             reserved_data['data'].append(node_entry)
-            message = f"✅ Reserved hex prefix {hex_prefix} for repeater: **{name}**"
+            message = f"{CHECK} Reserved hex prefix {hex_prefix} for repeater: **{name}**"
 
             # Update timestamp
             reserved_data['timestamp'] = datetime.now().isoformat()
@@ -1290,7 +1378,7 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             removed_count = initial_count - len(reserved_data['data'])
 
             if removed_count == 0:
-                await ctx.respond(f"❌ {hex_prefix} is not reserved for a repeater")
+                await ctx.respond(f"{CROSS} {hex_prefix} is not reserved for a repeater")
                 return
 
             # Update timestamp
@@ -1300,7 +1388,7 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             with open(reserved_nodes_file, 'w') as f:
                 json.dump(reserved_data, f, indent=2)
 
-            message = f"✅ Released hex prefix {hex_prefix}"
+            message = f"{CHECK} Released hex prefix {hex_prefix}"
             await ctx.respond(message)
         except Exception as e:
             logger.error(f"Error in release command: {e}")
@@ -1348,7 +1436,7 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
                         matching_repeaters.append(node)
 
             if not matching_repeaters:
-                await ctx.respond(f"❌ No repeater found with hex prefix {hex_prefix}")
+                await ctx.respond(f"{CROSS} No repeater found with hex prefix {hex_prefix}")
                 return
 
             # If multiple repeaters found, show select menu
@@ -1429,7 +1517,7 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
             await process_repeater_removal(selected_repeater, ctx)
         except Exception as e:
             logger.error(f"Error in remove command: {e}")
-            await ctx.respond(f"❌ Error removing repeater: {str(e)}")
+            await ctx.respond(f"{CROSS} Error removing repeater: {str(e)}")
 
 
 @bot.listen()
@@ -1460,7 +1548,7 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
             else:
                 await interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
-                    "❌ No selection made",
+                    f"{CROSS} No selection made",
                     components=None
                 )
 
@@ -1483,7 +1571,7 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
             else:
                 await interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
-                    "❌ No selection made",
+                    f"{CROSS} No selection made",
                     components=None
                 )
 
@@ -1513,7 +1601,7 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
                 repeaters = [r for r in repeaters if not is_node_removed(r)]
 
             if not repeaters or len(repeaters) == 0:
-                await ctx.respond(f"❌ No repeater found with prefix {hex_prefix}.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond(f"{CROSS} No repeater found with prefix {hex_prefix}.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             # If multiple repeaters found, show select menu
@@ -1589,7 +1677,7 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
                 await generate_and_send_qr(selected_repeater, ctx)
         except Exception as e:
             logger.error(f"Error in qr command: {e}")
-            await ctx.respond(f"❌ Error generating QR code: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond(f"{CROSS} Error generating QR code: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -1610,7 +1698,7 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
                             public_key = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
                             name = node.get('name', 'Unknown')
                             if public_key and name and node.get('device_role') == 2:
-                                lines.append(f"❌ {public_key}: {name}")
+                                lines.append(f"{CROSS} {public_key}: {name}")
                 except Exception as e:
                     logger.debug(f"Error reading removedNodes.json: {e}")
 
@@ -1645,7 +1733,7 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                             prefix = node.get('prefix', '').upper() if node.get('prefix') else ''
                             name = node.get('name', 'Unknown')
                             if prefix and name:
-                                lines.append(f"⏳ {prefix}: {name}")
+                                lines.append(f"{RESERVED} {prefix}: {name}")
                 except Exception as e:
                     logger.debug(f"Error reading reservedNodes.json: {e}")
 
@@ -1694,7 +1782,7 @@ class KeygenCommand(lightbulb.SlashCommand, name="keygen",
                 from meshcore_keygen import VanityConfig, VanityMode, MeshCoreKeyGenerator
             except ImportError as e:
                 logger.error(f"Error importing meshcore_keygen: {e}")
-                await ctx.interaction.edit_initial_response("❌ Error: Could not import key generator module.")
+                await ctx.interaction.edit_initial_response(f"{CROSS} Error: Could not import key generator module.")
                 return
 
             # Run key generation in executor to avoid blocking
@@ -1722,15 +1810,15 @@ class KeygenCommand(lightbulb.SlashCommand, name="keygen",
                 message = f"Public key: {key_info.public_hex}\nPrivate key: {key_info.private_hex}"
                 await ctx.interaction.edit_initial_response(message)
             else:
-                await ctx.interaction.edit_initial_response(f"❌ Could not generate key with prefix `{hex_prefix}` within the time limit. Try a shorter prefix or try again.")
+                await ctx.interaction.edit_initial_response(f"{CROSS} Could not generate key with prefix `{hex_prefix}` within the time limit. Try a shorter prefix or try again.")
         except Exception as e:
             logger.error(f"Error in keygen command: {e}")
             import traceback
             logger.error(traceback.format_exc())
             try:
-                await ctx.interaction.edit_initial_response(f"❌ Error generating keypair: {str(e)}")
+                await ctx.interaction.edit_initial_response(f"{CROSS} Error generating keypair: {str(e)}")
             except Exception as e:
-                await ctx.respond(f"❌ Error generating keypair: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond(f"{CROSS} Error generating keypair: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()

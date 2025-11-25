@@ -6,4 +6,6 @@ updated.json
 reservedNodes.json
 removedNodes.json
 update_summary.txt
+repeaterOwners.json
+placeholder.txt
 .DS_Store
