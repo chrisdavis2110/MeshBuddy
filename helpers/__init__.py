@@ -7,7 +7,7 @@ This package contains utility functions organized by functionality:
 - config_utils: Configuration management
 """
 
-from .data_utils import save_data_to_json, load_data_from_json, compare_data
+from .data_utils import save_data_to_json, load_data_from_json, compare_data, get_data_dir
 from .device_utils import (
     extract_device_types,
     get_companion_list,
@@ -27,6 +27,7 @@ __all__ = [
     'save_data_to_json',
     'load_data_from_json',
     'compare_data',
+    'get_data_dir',
 
     # Device utilities
     'extract_device_types',
