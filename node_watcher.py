@@ -13,6 +13,8 @@ import time
 from datetime import datetime
 from typing import Set, Dict, Optional
 
+from helpers.config_utils import load_config
+
 # Initialize logging
 logging.basicConfig(
     level=logging.INFO,
@@ -22,18 +24,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-NODES_FILE = "nodes.json"
-RESERVED_NODES_FILE = "reservedNodes.json"
-REMOVED_NODES_FILE = "removedNodes.json"
 CHECK_INTERVAL = 60  # Check every 60 seconds
 RECENT_DAYS = 1  # Consider "recently advertised" if last_seen within 1 day
 REMOVAL_THRESHOLD_DAYS = 14  # Add nodes to removedNodes if not seen in 14+ days
 
 
 class NodeWatcher:
-    """Watches nodes.json for changes and manages reserved/removed nodes"""
+    """Watches nodes.json for changes and manages reserved/removed nodes for a specific category"""
 
-    def __init__(self):
+    def __init__(self, nodes_file: str, reserved_nodes_file: str, removed_nodes_file: str, category_id: Optional[int] = None):
+        self.nodes_file = nodes_file
+        self.reserved_nodes_file = reserved_nodes_file
+        self.removed_nodes_file = removed_nodes_file
+        self.category_id = category_id
         self.known_node_keys: Set[str] = set()
         self.known_nodes_map: Dict[str, Dict] = {}  # Store full node data for missing node tracking
         self.last_file_mtime = 0
@@ -47,29 +50,29 @@ class NodeWatcher:
 
         for attempt in range(max_retries):
             try:
-                if not os.path.exists(NODES_FILE):
-                    logger.warning(f"{NODES_FILE} not found")
+                if not os.path.exists(self.nodes_file):
+                    logger.warning(f"{self.nodes_file} not found")
                     return None
 
                 # Check if file is empty before trying to parse
-                if os.path.getsize(NODES_FILE) == 0:
+                if os.path.getsize(self.nodes_file) == 0:
                     if attempt < max_retries - 1:
-                        logger.debug(f"{NODES_FILE} is empty, retrying in {retry_delay}s...")
+                        logger.debug(f"{self.nodes_file} is empty, retrying in {retry_delay}s...")
                         time.sleep(retry_delay)
                         continue
                     else:
-                        logger.warning(f"{NODES_FILE} is empty after {max_retries} attempts")
+                        logger.warning(f"{self.nodes_file} is empty after {max_retries} attempts")
                         return None
 
-                with open(NODES_FILE, 'r') as f:
+                with open(self.nodes_file, 'r') as f:
                     content = f.read().strip()
                     if not content:
                         if attempt < max_retries - 1:
-                            logger.debug(f"{NODES_FILE} appears empty, retrying in {retry_delay}s...")
+                            logger.debug(f"{self.nodes_file} appears empty, retrying in {retry_delay}s...")
                             time.sleep(retry_delay)
                             continue
                         else:
-                            logger.warning(f"{NODES_FILE} is empty after {max_retries} attempts")
+                            logger.warning(f"{self.nodes_file} is empty after {max_retries} attempts")
                             return None
 
                     # Parse JSON from content string
@@ -77,19 +80,19 @@ class NodeWatcher:
 
             except json.JSONDecodeError as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"Error parsing {NODES_FILE} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    logger.debug(f"Error parsing {self.nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
                     time.sleep(retry_delay)
                     continue
                 else:
-                    logger.error(f"Error parsing {NODES_FILE}: {e}")
+                    logger.error(f"Error parsing {self.nodes_file}: {e}")
                     return None
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"Error loading {NODES_FILE} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    logger.debug(f"Error loading {self.nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
                     time.sleep(retry_delay)
                     continue
                 else:
-                    logger.error(f"Error loading {NODES_FILE}: {e}")
+                    logger.error(f"Error loading {self.nodes_file}: {e}")
                     return None
 
         # Fallback (should never reach here)
@@ -103,35 +106,35 @@ class NodeWatcher:
 
         for attempt in range(max_retries):
             try:
-                if not os.path.exists(RESERVED_NODES_FILE):
-                    logger.debug(f"{RESERVED_NODES_FILE} not found")
+                if not os.path.exists(self.reserved_nodes_file):
+                    logger.debug(f"{self.reserved_nodes_file} not found")
                     return {
                         "timestamp": datetime.now().isoformat(),
                         "data": []
                     }
 
                 # Check if file is empty before trying to parse
-                if os.path.getsize(RESERVED_NODES_FILE) == 0:
+                if os.path.getsize(self.reserved_nodes_file) == 0:
                     if attempt < max_retries - 1:
-                        logger.debug(f"{RESERVED_NODES_FILE} is empty, retrying in {retry_delay}s...")
+                        logger.debug(f"{self.reserved_nodes_file} is empty, retrying in {retry_delay}s...")
                         time.sleep(retry_delay)
                         continue
                     else:
-                        logger.debug(f"{RESERVED_NODES_FILE} is empty after {max_retries} attempts")
+                        logger.debug(f"{self.reserved_nodes_file} is empty after {max_retries} attempts")
                         return {
                             "timestamp": datetime.now().isoformat(),
                             "data": []
                         }
 
-                with open(RESERVED_NODES_FILE, 'r') as f:
+                with open(self.reserved_nodes_file, 'r') as f:
                     content = f.read().strip()
                     if not content:
                         if attempt < max_retries - 1:
-                            logger.debug(f"{RESERVED_NODES_FILE} appears empty, retrying in {retry_delay}s...")
+                            logger.debug(f"{self.reserved_nodes_file} appears empty, retrying in {retry_delay}s...")
                             time.sleep(retry_delay)
                             continue
                         else:
-                            logger.debug(f"{RESERVED_NODES_FILE} is empty after {max_retries} attempts")
+                            logger.debug(f"{self.reserved_nodes_file} is empty after {max_retries} attempts")
                             return {
                                 "timestamp": datetime.now().isoformat(),
                                 "data": []
@@ -142,22 +145,22 @@ class NodeWatcher:
 
             except json.JSONDecodeError as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"Error parsing {RESERVED_NODES_FILE} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    logger.debug(f"Error parsing {self.reserved_nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
                     time.sleep(retry_delay)
                     continue
                 else:
-                    logger.error(f"Error parsing {RESERVED_NODES_FILE}: {e}")
+                    logger.error(f"Error parsing {self.reserved_nodes_file}: {e}")
                     return {
                         "timestamp": datetime.now().isoformat(),
                         "data": []
                     }
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"Error loading {RESERVED_NODES_FILE} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    logger.debug(f"Error loading {self.reserved_nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
                     time.sleep(retry_delay)
                     continue
                 else:
-                    logger.error(f"Error loading {RESERVED_NODES_FILE}: {e}")
+                    logger.error(f"Error loading {self.reserved_nodes_file}: {e}")
                     return {
                         "timestamp": datetime.now().isoformat(),
                         "data": []
@@ -173,11 +176,11 @@ class NodeWatcher:
         """Save reservedNodes.json"""
         try:
             data["timestamp"] = datetime.now().isoformat()
-            with open(RESERVED_NODES_FILE, 'w') as f:
+            with open(self.reserved_nodes_file, 'w') as f:
                 json.dump(data, f, indent=2)
-            logger.info(f"Updated {RESERVED_NODES_FILE}")
+            logger.info(f"Updated {self.reserved_nodes_file}")
         except Exception as e:
-            logger.error(f"Error saving {RESERVED_NODES_FILE}: {e}")
+            logger.error(f"Error saving {self.reserved_nodes_file}: {e}")
 
     def load_removed_nodes(self) -> Optional[Dict]:
         """Load removedNodes.json and return the data"""
@@ -187,35 +190,35 @@ class NodeWatcher:
 
         for attempt in range(max_retries):
             try:
-                if not os.path.exists(REMOVED_NODES_FILE):
-                    logger.debug(f"{REMOVED_NODES_FILE} not found")
+                if not os.path.exists(self.removed_nodes_file):
+                    logger.debug(f"{self.removed_nodes_file} not found")
                     return {
                         "timestamp": datetime.now().isoformat(),
                         "data": []
                     }
 
                 # Check if file is empty before trying to parse
-                if os.path.getsize(REMOVED_NODES_FILE) == 0:
+                if os.path.getsize(self.removed_nodes_file) == 0:
                     if attempt < max_retries - 1:
-                        logger.debug(f"{REMOVED_NODES_FILE} is empty, retrying in {retry_delay}s...")
+                        logger.debug(f"{self.removed_nodes_file} is empty, retrying in {retry_delay}s...")
                         time.sleep(retry_delay)
                         continue
                     else:
-                        logger.debug(f"{REMOVED_NODES_FILE} is empty after {max_retries} attempts")
+                        logger.debug(f"{self.removed_nodes_file} is empty after {max_retries} attempts")
                         return {
                             "timestamp": datetime.now().isoformat(),
                             "data": []
                         }
 
-                with open(REMOVED_NODES_FILE, 'r') as f:
+                with open(self.removed_nodes_file, 'r') as f:
                     content = f.read().strip()
                     if not content:
                         if attempt < max_retries - 1:
-                            logger.debug(f"{REMOVED_NODES_FILE} appears empty, retrying in {retry_delay}s...")
+                            logger.debug(f"{self.removed_nodes_file} appears empty, retrying in {retry_delay}s...")
                             time.sleep(retry_delay)
                             continue
                         else:
-                            logger.debug(f"{REMOVED_NODES_FILE} is empty after {max_retries} attempts")
+                            logger.debug(f"{self.removed_nodes_file} is empty after {max_retries} attempts")
                             return {
                                 "timestamp": datetime.now().isoformat(),
                                 "data": []
@@ -226,22 +229,22 @@ class NodeWatcher:
 
             except json.JSONDecodeError as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"Error parsing {REMOVED_NODES_FILE} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    logger.debug(f"Error parsing {self.removed_nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
                     time.sleep(retry_delay)
                     continue
                 else:
-                    logger.error(f"Error parsing {REMOVED_NODES_FILE}: {e}")
+                    logger.error(f"Error parsing {self.removed_nodes_file}: {e}")
                     return {
                         "timestamp": datetime.now().isoformat(),
                         "data": []
                     }
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logger.debug(f"Error loading {REMOVED_NODES_FILE} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    logger.debug(f"Error loading {self.removed_nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
                     time.sleep(retry_delay)
                     continue
                 else:
-                    logger.error(f"Error loading {REMOVED_NODES_FILE}: {e}")
+                    logger.error(f"Error loading {self.removed_nodes_file}: {e}")
                     return {
                         "timestamp": datetime.now().isoformat(),
                         "data": []
@@ -257,11 +260,11 @@ class NodeWatcher:
         """Save removedNodes.json"""
         try:
             data["timestamp"] = datetime.now().isoformat()
-            with open(REMOVED_NODES_FILE, 'w') as f:
+            with open(self.removed_nodes_file, 'w') as f:
                 json.dump(data, f, indent=2)
-            logger.info(f"Updated {REMOVED_NODES_FILE}")
+            logger.info(f"Updated {self.removed_nodes_file}")
         except Exception as e:
-            logger.error(f"Error saving {REMOVED_NODES_FILE}: {e}")
+            logger.error(f"Error saving {self.removed_nodes_file}: {e}")
 
     def is_node_recently_seen(self, node: Dict, days: int = RECENT_DAYS) -> bool:
         """Check if a node has been seen recently (within the last N days)"""
@@ -293,16 +296,17 @@ class NodeWatcher:
                 current_nodes_map[public_key] = node
 
         # If this is the first check, initialize known_node_keys and known_nodes_map
+        category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
         if not self.known_node_keys:
             self.known_node_keys = current_node_keys.copy()
             self.known_nodes_map = current_nodes_map.copy()
-            logger.info(f"Initialized node watcher with {len(self.known_node_keys)} existing nodes")
+            logger.info(f"{category_prefix}Initialized node watcher with {len(self.known_node_keys)} existing nodes")
             # Still check reserved nodes even on first run
         else:
             # Find keys that have disappeared (were seen before but not now)
             missing_keys = self.known_node_keys - current_node_keys
             if missing_keys:
-                logger.info(f"Found {len(missing_keys)} node(s) that are no longer in nodes.json")
+                logger.info(f"{category_prefix}Found {len(missing_keys)} node(s) that are no longer in {self.nodes_file}")
                 # Add missing nodes to removed list
                 self._add_missing_nodes_to_removed(missing_keys)
 
@@ -335,7 +339,8 @@ class NodeWatcher:
 
                 # Match if both prefix and name are the same
                 if node_prefix == reserved_prefix and node_name == reserved_name and node.get('device_role') == 2:
-                    logger.info(f"Repeater with public_key {public_key[:2].upper()} and name '{node_name}' matches reserved entry - removing from reserved list")
+                    category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+                    logger.info(f"{category_prefix}Repeater with public_key {public_key[:2].upper()} and name '{node_name}' matches reserved entry - removing from reserved list")
                     removed_any = True
                     matched = True
                     break
@@ -380,7 +385,8 @@ class NodeWatcher:
                     nodes_to_add.append(node_entry)
                     removed_public_keys.add(missing_key)
                     node_name = known_node.get('name', 'Unknown')
-                    logger.info(f"Node with public_key {missing_key[:8]} ({node_name}) is no longer in nodes.json - adding to removed list")
+                    category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+                    logger.info(f"{category_prefix}Node with public_key {missing_key[:8]} ({node_name}) is no longer in {self.nodes_file} - adding to removed list")
                 else:
                     # Fallback if we don't have the node data
                     node_entry = {
@@ -389,13 +395,15 @@ class NodeWatcher:
                     }
                     nodes_to_add.append(node_entry)
                     removed_public_keys.add(missing_key)
-                    logger.info(f"Node with public_key {missing_key[:8]} is no longer in nodes.json - adding to removed list (no previous data)")
+                    category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+                    logger.info(f"{category_prefix}Node with public_key {missing_key[:8]} is no longer in {self.nodes_file} - adding to removed list (no previous data)")
 
         if nodes_to_add:
             removed_list.extend(nodes_to_add)
             removed_data['data'] = removed_list
             self.save_removed_nodes(removed_data)
-            logger.info(f"Added {len(nodes_to_add)} missing node(s) to {REMOVED_NODES_FILE}")
+            category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+            logger.info(f"{category_prefix}Added {len(nodes_to_add)} missing node(s) to {self.removed_nodes_file}")
 
     def check_removed_nodes_for_recent_activity(self, nodes_data: Dict):
         """Check if any removed nodes have advertised recently and remove them from removed list"""
@@ -432,7 +440,8 @@ class NodeWatcher:
                 if self.is_node_recently_seen(current_node):
                     node_hex = current_node.get('public_key', '')[:2].upper() if current_node.get('public_key') else ''
                     node_name = current_node.get('name', 'Unknown')
-                    logger.info(f"Removed node {node_hex}: {node_name} has advertised recently - removing from removed list")
+                    category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+                    logger.info(f"{category_prefix}Removed node {node_hex}: {node_name} has advertised recently - removing from removed list")
                     removed_any = True
                     # Don't add to updated_removed_list (remove it)
                 else:
@@ -492,7 +501,8 @@ class NodeWatcher:
                 if days_since_seen > REMOVAL_THRESHOLD_DAYS:
                     node_hex = public_key[:2].upper() if len(public_key) >= 2 else ''
                     node_name = node.get('name', 'Unknown')
-                    logger.info(f"Repeater {node_hex}: {node_name} has not been seen in {days_since_seen} days (>14 days) - adding to removedNodes")
+                    category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+                    logger.info(f"{category_prefix}Repeater {node_hex}: {node_name} has not been seen in {days_since_seen} days (>14 days) - adding to removedNodes")
                     nodes_to_add.append(node)
                     removed_public_keys.add(public_key)  # Track to avoid duplicates in same batch
 
@@ -505,7 +515,8 @@ class NodeWatcher:
             removed_list.extend(nodes_to_add)
             removed_data['data'] = removed_list
             self.save_removed_nodes(removed_data)
-            logger.info(f"Added {len(nodes_to_add)} node(s) to {REMOVED_NODES_FILE}")
+            category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+            logger.info(f"{category_prefix}Added {len(nodes_to_add)} node(s) to {self.removed_nodes_file}")
 
     def check(self):
         """Perform a single check of nodes.json"""
@@ -525,11 +536,13 @@ class NodeWatcher:
             self.check_nodes_for_removal(nodes_data)
 
         except Exception as e:
-            logger.error(f"Error in node watcher check: {e}")
+            category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+            logger.error(f"{category_prefix}Error in node watcher check: {e}")
 
     def run(self):
         """Run the watcher continuously"""
-        logger.info("Starting node watcher...")
+        category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+        logger.info(f"{category_prefix}Starting node watcher for {self.nodes_file}...")
 
         # Perform initial check
         self.check()
@@ -537,17 +550,36 @@ class NodeWatcher:
         # Continuous monitoring loop
         while True:
             try:
-                current_size = os.path.getsize(NODES_FILE) if os.path.exists(NODES_FILE) else 0
+                current_size = os.path.getsize(self.nodes_file) if os.path.exists(self.nodes_file) else 0
                 if current_size > 0:
                     # Process only new data
                     self.check()
                 time.sleep(5)  # Check every 5 seconds
             except KeyboardInterrupt:
-                logger.info("Node watcher stopped by user")
+                logger.info(f"{category_prefix}Node watcher stopped by user")
                 break
             except Exception as e:
-                logger.error(f"Error in watcher loop: {e}")
+                logger.error(f"{category_prefix}Error in watcher loop: {e}")
                 time.sleep(CHECK_INTERVAL)
+
+def get_category_sections(config):
+    """Get all category sections from config that have nodes_file, removed_nodes_file, and reserved_nodes_file"""
+    all_sections = config.sections()
+    category_sections = []
+    for section in all_sections:
+        try:
+            # Try to convert to int to see if it's a category ID
+            category_id = int(section)
+            # Check if it has the required keys
+            if (config.has_option(section, "nodes_file") and
+                config.has_option(section, "removed_nodes_file") and
+                config.has_option(section, "reserved_nodes_file")):
+                category_sections.append((category_id, section))
+        except (ValueError, TypeError):
+            # Not a numeric section, skip it
+            continue
+    return category_sections
+
 
 def main():
     import argparse
@@ -556,14 +588,54 @@ def main():
 
     args = parser.parse_args()
 
-    watcher = NodeWatcher()
+    # Load config
+    config = load_config("config.ini")
+
+    # Get all category sections
+    category_sections = get_category_sections(config)
+
+    if not category_sections:
+        logger.warning("No category sections found with nodes_file, removed_nodes_file, and reserved_nodes_file")
+        logger.info("Falling back to default files: nodes.json, reservedNodes.json, removedNodes.json")
+        # Fallback to default files if no category sections found
+        watcher = NodeWatcher("nodes.json", "reservedNodes.json", "removedNodes.json")
+        if args.watch:
+            watcher.run()
+        else:
+            watcher.check()
+        return
+
+    logger.info(f"Found {len(category_sections)} category section(s) to process")
+
+    # Create watchers for each category
+    watchers = []
+    for category_id, section in category_sections:
+        nodes_file = config.get(section, "nodes_file")
+        removed_nodes_file = config.get(section, "removed_nodes_file")
+        reserved_nodes_file = config.get(section, "reserved_nodes_file")
+
+        logger.info(f"Creating watcher for category {category_id}: {nodes_file}")
+        watcher = NodeWatcher(nodes_file, reserved_nodes_file, removed_nodes_file, category_id)
+        watchers.append(watcher)
 
     if args.watch:
-        # Watch mode - continuously monitor nodes.json
-        watcher.run()
+        # Watch mode - continuously monitor all category nodes files
+        logger.info("Starting node watchers in watch mode...")
+        while True:
+            try:
+                for watcher in watchers:
+                    watcher.check()
+                time.sleep(900)  # Check every 15 minutes
+            except KeyboardInterrupt:
+                logger.info("Node watchers stopped by user")
+                break
+            except Exception as e:
+                logger.error(f"Error in watcher loop: {e}")
+                time.sleep(CHECK_INTERVAL)
     else:
-        # One-time check
-        watcher.check()
+        # One-time check for all categories
+        for watcher in watchers:
+            watcher.check()
 
 
 if __name__ == "__main__":

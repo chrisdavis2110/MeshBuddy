@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 config = load_config("config.ini")
 
-bot = hikari.GatewayBot(config.get("discord", "token"))
+bot = hikari.GatewayBot(config.get("discord", "devtoken"))
 client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
 
@@ -37,6 +37,246 @@ pending_remove_selections = {}
 pending_qr_selections = {}  # Track pending QR code selections
 known_node_keys = set()  # Track known node public_keys
 
+def get_allowed_category_ids():
+    """Get all allowed category IDs from config sections.
+
+    Returns a set of category IDs found in config sections that are numeric
+    and have a nodes_file option (indicating they are valid category sections).
+    """
+    allowed_categories = set()
+    all_sections = config.sections()
+
+    for section in all_sections:
+        try:
+            # Try to convert to int to see if it's a category ID
+            category_id = int(section)
+            # Check if it has nodes_file (indicating it's a valid category section)
+            if config.has_option(section, "nodes_file"):
+                allowed_categories.add(category_id)
+        except (ValueError, TypeError):
+            # Not a numeric section, skip it
+            continue
+
+    return allowed_categories
+
+# Get allowed category IDs from config
+ALLOWED_CATEGORY_IDS = get_allowed_category_ids()
+
+if ALLOWED_CATEGORY_IDS:
+    logger.info(f"Category restriction enabled: commands will only work in category IDs {ALLOWED_CATEGORY_IDS}")
+else:
+    logger.info("No category sections found in config - commands will work in all channels")
+
+@lightbulb.hook(lightbulb.ExecutionSteps.CHECKS, skip_when_failed=True)
+async def category_check(pl: lightbulb.ExecutionPipeline, ctx: lightbulb.Context) -> None:
+    """Check if command is being executed in an allowed category"""
+    # If no category restriction is set, allow all
+    if not ALLOWED_CATEGORY_IDS:
+        return
+
+    try:
+        # Get the channel where the command was invoked
+        channel = await bot.rest.fetch_channel(ctx.channel_id)
+
+        # Get the category ID (parent_id)
+        category_id = channel.parent_id
+
+        # If channel has no category, deny (unless category restriction is disabled)
+        if not category_id:
+            await ctx.respond(f"{CROSS} This command can only be used in a specific category.", flags=hikari.MessageFlag.EPHEMERAL)
+            raise RuntimeError("Command executed outside allowed category")
+
+        # Check if the category is in the allowed categories list
+        if category_id not in ALLOWED_CATEGORY_IDS:
+            await ctx.respond(f"{CROSS} This command can only be used in a regional category.", flags=hikari.MessageFlag.EPHEMERAL)
+            raise RuntimeError("Command executed outside allowed category")
+    except RuntimeError:
+        # Re-raise RuntimeError to fail the pipeline
+        raise
+    except Exception as e:
+        logger.error(f"Error checking category: {e}")
+        raise RuntimeError("Error checking category") from e
+
+
+async def get_category_id_from_context(ctx: lightbulb.Context) -> int | None:
+    """Get the category ID from the context where the command was invoked"""
+    try:
+        channel = await bot.rest.fetch_channel(ctx.channel_id)
+        return channel.parent_id
+    except Exception as e:
+        logger.error(f"Error getting category ID from context: {e}")
+        return None
+
+def get_nodes_file_for_category(category_id: int | None) -> str:
+    """Get the nodes file name based on category ID.
+
+    Maps category IDs to node file names. If category_id is None or not found,
+    defaults to 'nodes.json'.
+
+    You can configure category-to-file mapping in config.ini using sections:
+    [1442638798985891940]
+    nodes_file = nodes_socal.json
+    """
+    if category_id is None:
+        return "nodes.json"
+
+    # Try to get category-specific node file from config section [category_id]
+    category_section = str(category_id)
+    nodes_file = config.get(category_section, "nodes_file", fallback=None)
+
+    if nodes_file:
+        logger.debug(f"Using category-specific nodes file: {nodes_file} for category {category_id}")
+        return nodes_file
+
+    # Default to nodes.json if no mapping found
+    logger.debug(f"No category-specific nodes file found for category {category_id}, using default nodes.json")
+    return "nodes.json"
+
+def get_reserved_nodes_file_for_category(category_id: int | None) -> str:
+    """Get the reserved nodes file name based on category ID.
+
+    Maps category IDs to reserved nodes file names. If category_id is None or not found,
+    defaults to 'reservedNodes.json'.
+
+    You can configure category-to-file mapping in config.ini using sections:
+    [1442638798985891940]
+    reserved_nodes_file = reservedNodes_socal.json
+    """
+    if category_id is None:
+        return "reservedNodes.json"
+
+    # Try to get category-specific reserved nodes file from config section [category_id]
+    category_section = str(category_id)
+    reserved_file = config.get(category_section, "reserved_nodes_file", fallback=None)
+
+    if reserved_file:
+        logger.debug(f"Using category-specific reserved nodes file: {reserved_file} for category {category_id}")
+        return reserved_file
+
+    # Default to reservedNodes.json if no mapping found
+    logger.debug(f"No category-specific reserved nodes file found for category {category_id}, using default reservedNodes.json")
+    return "reservedNodes.json"
+
+def get_removed_nodes_file_for_category(category_id: int | None) -> str:
+    """Get the removed nodes file name based on category ID.
+
+    Maps category IDs to removed nodes file names. If category_id is None or not found,
+    defaults to 'removedNodes.json'.
+
+    You can configure category-to-file mapping in config.ini using sections:
+    [1442638798985891940]
+    removed_nodes_file = removedNodes_socal.json
+    """
+    if category_id is None:
+        return "removedNodes.json"
+
+    # Try to get category-specific removed nodes file from config section [category_id]
+    category_section = str(category_id)
+    removed_file = config.get(category_section, "removed_nodes_file", fallback=None)
+
+    if removed_file:
+        logger.debug(f"Using category-specific removed nodes file: {removed_file} for category {category_id}")
+        return removed_file
+
+    # Default to removedNodes.json if no mapping found
+    logger.debug(f"No category-specific removed nodes file found for category {category_id}, using default removedNodes.json")
+    return "removedNodes.json"
+
+async def get_reserved_nodes_file_for_context(ctx: lightbulb.Context) -> str:
+    """Get reserved nodes file name based on the category where the command was invoked"""
+    category_id = await get_category_id_from_context(ctx)
+    return get_reserved_nodes_file_for_category(category_id)
+
+async def get_removed_nodes_file_for_context(ctx: lightbulb.Context) -> str:
+    """Get removed nodes file name based on the category where the command was invoked"""
+    category_id = await get_category_id_from_context(ctx)
+    return get_removed_nodes_file_for_category(category_id)
+
+async def get_nodes_data_for_context(ctx: lightbulb.Context):
+    """Get nodes data based on the category where the command was invoked"""
+    category_id = await get_category_id_from_context(ctx)
+    nodes_file = get_nodes_file_for_category(category_id)
+    return load_data_from_json(nodes_file)
+
+async def get_repeater_for_context(ctx: lightbulb.Context, prefix: str, days: int = 7):
+    """Get repeater data based on the category where the command was invoked"""
+    data = await get_nodes_data_for_context(ctx)
+    # Use extract_device_types with the category-specific data
+    from helpers.device_utils import extract_device_types
+    devices = extract_device_types(data=data, device_types=['repeaters'], days=days)
+    if devices is None:
+        return None
+    repeaters = devices.get('repeaters', [])
+    # Find all repeaters with the specified prefix
+    matching_repeaters = []
+    for contact in repeaters:
+        contact_prefix = contact.get('public_key', '')[:2] if contact.get('public_key') else '??'
+        if contact_prefix.upper() == prefix.upper():
+            matching_repeaters.append(contact)
+    return matching_repeaters if matching_repeaters else None
+
+async def get_extract_device_types_for_context(ctx: lightbulb.Context, device_types=None, days=7):
+    """Extract device types based on the category where the command was invoked"""
+    data = await get_nodes_data_for_context(ctx)
+    from helpers.device_utils import extract_device_types
+    return extract_device_types(data=data, device_types=device_types, days=days)
+
+async def get_unused_keys_for_context(ctx: lightbulb.Context, days=7):
+    """Get unused keys based on the category where the command was invoked"""
+    data = await get_nodes_data_for_context(ctx)
+    from helpers.device_utils import extract_device_types
+    devices = extract_device_types(data=data, device_types=['repeaters'], days=days)
+    if devices is None:
+        return None
+    repeaters = devices.get('repeaters', [])
+    # Load removed nodes to exclude them (category-specific)
+    import os
+    removed_set = set()
+    category_id = await get_category_id_from_context(ctx)
+    removed_nodes_file = get_removed_nodes_file_for_category(category_id)
+    if os.path.exists(removed_nodes_file):
+        try:
+            with open(removed_nodes_file, 'r') as f:
+                removed_data = json.load(f)
+                for node in removed_data.get('data', []):
+                    node_prefix = node.get('public_key', '').upper() if node.get('public_key') else ''
+                    node_name = node.get('name', '').strip()
+                    if node_prefix and node_name:
+                        removed_set.add((node_prefix, node_name))
+        except Exception:
+            pass
+    # Get all currently used prefixes (excluding removed nodes)
+    used_keys = set()
+    for contact in repeaters:
+        contact_prefix = contact.get('public_key', '').upper() if contact.get('public_key') else ''
+        contact_name = contact.get('name', '').strip()
+        if (contact_prefix, contact_name) in removed_set:
+            continue
+        used_keys.add(contact_prefix[:2].upper())
+    # Load reserved nodes (category-specific)
+    reserved_set = set()
+    reserved_nodes_file = get_reserved_nodes_file_for_category(category_id)
+    if os.path.exists(reserved_nodes_file):
+        try:
+            with open(reserved_nodes_file, 'r') as f:
+                reserved_data = json.load(f)
+                for node in reserved_data.get('data', []):
+                    prefix = node.get('prefix', '').upper()
+                    if prefix:
+                        reserved_set.add(prefix)
+        except Exception as e:
+            logger.debug(f"Error reading reservedNodes.json: {e}")
+    # Generate all possible hex keys from 00 to FF
+    all_possible_keys = set()
+    for i in range(256):
+        hex_key = f"{i:02X}"
+        all_possible_keys.add(hex_key)
+    # Find unused keys
+    unused_keys = all_possible_keys - used_keys - reserved_set - set(['00', 'FF'])
+    if unused_keys:
+        return sorted(unused_keys)
+    return []
+
 # Cache for server emojis
 server_emojis_cache = {}
 emoji_name_to_string = {}  # Cache for formatted emoji strings
@@ -48,7 +288,7 @@ async def initialize_emojis(channel_id: int = None):
     try:
         # Get channel ID from config if not provided
         if channel_id is None:
-            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
+            channel_id = config.get("discord", "devmessenger_channel_id", fallback=None)
 
         if not channel_id:
             logger.warning("No channel_id available to initialize emojis")
@@ -204,10 +444,9 @@ def normalize_node(node):
             node['last_seen'] = node['last_heard']
     return node
 
-def get_removed_nodes_set():
+def get_removed_nodes_set(removed_nodes_file="removedNodes.json"):
     """Load removedNodes.json and return a set of (prefix, name) tuples for quick lookup"""
     removed_set = set()
-    removed_nodes_file = "removedNodes.json"
 
     if not os.path.exists(removed_nodes_file):
         return removed_set
@@ -261,9 +500,15 @@ def get_removed_nodes_set():
 
     return removed_set
 
-def is_node_removed(contact):
-    """Check if a contact node has been removed"""
-    removed_set = get_removed_nodes_set()
+def is_node_removed(contact, removed_nodes_file="removedNodes.json"):
+    """Check if a contact node has been removed (uses default removedNodes.json)"""
+    removed_set = get_removed_nodes_set(removed_nodes_file)
+    prefix = contact.get('public_key', '').upper() if contact.get('public_key') else ''
+    name = contact.get('name', '').strip()
+
+def is_node_removed_in_file(contact, removed_nodes_file):
+    """Check if a contact node has been removed in a specific file"""
+    removed_set = get_removed_nodes_set(removed_nodes_file)
     prefix = contact.get('public_key', '').upper() if contact.get('public_key') else ''
     name = contact.get('name', '').strip()
     return (prefix, name) in removed_set
@@ -349,10 +594,22 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
             await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
 
 async def process_repeater_removal(selected_repeater, ctx_or_interaction):
-    """Process the removal of a repeater to removedNodes.json"""
+    """Process the removal of a repeater to removedNodes.json (category-specific)"""
     try:
-        # Load or create removedNodes.json
-        removed_nodes_file = "removedNodes.json"
+        # Get category-specific removed nodes file
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx_or_interaction)
+        elif hasattr(ctx_or_interaction, 'channel_id'):
+            # For ComponentInteraction, we need to create a temporary context-like object
+            # or fetch the channel to get category
+            try:
+                channel = await bot.rest.fetch_channel(ctx_or_interaction.channel_id)
+                category_id = channel.parent_id
+                removed_nodes_file = get_removed_nodes_file_for_category(category_id)
+            except Exception:
+                removed_nodes_file = "removedNodes.json"  # Fallback to default
+        else:
+            removed_nodes_file = "removedNodes.json"  # Fallback to default
         if os.path.exists(removed_nodes_file):
             try:
                 with open(removed_nodes_file, 'r') as f:
@@ -448,83 +705,110 @@ def extract_prefix_for_sort(line):
     return 999
 
 async def update_repeater_channel_name():
-    """Update Discord channel name with device counts"""
+    """Update Discord channel name with device counts for all categories"""
     try:
-        # Get channel ID from config (you'll need to add this to config.ini)
-        channel_id = config.get("discord", "repeater_channel_id", fallback=None)
-        if not channel_id:
-            logger.warning("No channel_id specified in config.ini - skipping channel name update")
-            return
+        # Get all sections from config
+        all_sections = config.sections()
 
-        # Load all repeaters directly from nodes.json (not filtered by days)
-        data = load_data_from_json("nodes.json")
-        if data is None:
-            logger.warning("Could not get device data - skipping channel name update")
-            return
-
-        contacts = data.get("data", []) if isinstance(data, dict) else data
-        if not isinstance(contacts, list):
-            logger.warning("Invalid data format - skipping channel name update")
-            return
-
-        # Filter to repeaters only and normalize field names
-        repeaters = []
-        for contact in contacts:
-            if not isinstance(contact, dict):
-                continue
-            # Normalize field names
-            normalize_node(contact)
-            # Only include repeaters (device_role == 2)
-            if contact.get('device_role') == 2:
-                repeaters.append(contact)
-
-        # Filter out removed nodes
-        repeaters = [r for r in repeaters if not is_node_removed(r)]
-
-        # Categorize repeaters as online/offline based on last_seen
-        now = datetime.now().astimezone()
-        online_count = 0
-        offline_count = 0
-        dead_count = 0
-
-        for repeater in repeaters:
-            last_seen = repeater.get('last_seen')
-            if last_seen:
-                try:
-                    ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
-                    days_ago = (now - ls).days
-                    if days_ago >= 12:
-                        dead_count += 1
-                    elif days_ago >= 3:
-                        offline_count += 1
-                    else:
-                        online_count += 1
-                except Exception:
-                    # If we can't parse the timestamp, count as offline
-                    offline_count += 1
-            else:
-                # No last_seen timestamp, count as offline
-                offline_count += 1
-
-        # Count reserved repeaters
-        reserved_count = 0
-        if os.path.exists("reservedNodes.json"):
+        # Filter to only category sections (numeric section names)
+        category_sections = []
+        for section in all_sections:
             try:
-                with open("reservedNodes.json", 'r') as f:
-                    reserved_data = json.load(f)
-                    reserved_count = len(reserved_data.get('data', []))
+                # Try to convert to int to see if it's a category ID
+                category_id = int(section)
+                # Check if it has the required keys
+                if config.has_option(section, "repeater_channel_id") and config.has_option(section, "nodes_file"):
+                    category_sections.append((category_id, section))
+            except (ValueError, TypeError):
+                # Not a numeric section, skip it
+                continue
+
+        # Update each category's repeater channel
+        for category_id, section in category_sections:
+            try:
+                # Get category-specific files and channel
+                nodes_file = config.get(section, "nodes_file", fallback="nodes.json")
+                removed_nodes_file = config.get(section, "removed_nodes_file", fallback="removedNodes.json")
+                reserved_nodes_file = config.get(section, "reserved_nodes_file", fallback="reservedNodes.json")
+                channel_id = config.get(section, "repeater_channel_id", fallback=None)
+
+                if not channel_id:
+                    logger.debug(f"No repeater_channel_id for category {category_id}, skipping")
+                    continue
+
+                # Load category-specific nodes data
+                data = load_data_from_json(nodes_file)
+                if data is None:
+                    logger.warning(f"Could not load {nodes_file} for category {category_id} - skipping")
+                    continue
+
+                contacts = data.get("data", []) if isinstance(data, dict) else data
+                if not isinstance(contacts, list):
+                    logger.warning(f"Invalid data format in {nodes_file} for category {category_id} - skipping")
+                    continue
+
+                # Filter to repeaters only and normalize field names
+                repeaters = []
+                for contact in contacts:
+                    if not isinstance(contact, dict):
+                        continue
+                    # Normalize field names
+                    normalize_node(contact)
+                    # Only include repeaters (device_role == 2)
+                    if contact.get('device_role') == 2:
+                        repeaters.append(contact)
+
+                # Filter out removed nodes (using category-specific removed file)
+                repeaters = [r for r in repeaters if not is_node_removed_in_file(r, removed_nodes_file)]
+
+                # Categorize repeaters as online/offline based on last_seen
+                now = datetime.now().astimezone()
+                online_count = 0
+                offline_count = 0
+                dead_count = 0
+
+                for repeater in repeaters:
+                    last_seen = repeater.get('last_seen')
+                    if last_seen:
+                        try:
+                            ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
+                            days_ago = (now - ls).days
+                            if days_ago >= 12:
+                                dead_count += 1
+                            elif days_ago >= 3:
+                                offline_count += 1
+                            else:
+                                online_count += 1
+                        except Exception:
+                            # If we can't parse the timestamp, count as offline
+                            offline_count += 1
+                    else:
+                        # No last_seen timestamp, count as offline
+                        offline_count += 1
+
+                # Count reserved repeaters (category-specific)
+                reserved_count = 0
+                if os.path.exists(reserved_nodes_file):
+                    try:
+                        with open(reserved_nodes_file, 'r') as f:
+                            reserved_data = json.load(f)
+                            reserved_count = len(reserved_data.get('data', []))
+                    except Exception as e:
+                        logger.debug(f"Error reading {reserved_nodes_file}: {e}")
+
+                # Format channel name with counts
+                channel_name = f"{CHECK} {online_count} {WARN} {offline_count} {CROSS} {dead_count} {RESERVED} {reserved_count}"
+
+                # Update channel name
+                await bot.rest.edit_channel(int(channel_id), name=channel_name)
+                logger.info(f"Updated channel {channel_id} (category {category_id}) name to: {channel_name}")
+
             except Exception as e:
-                logger.debug(f"Error reading reservedNodes.json: {e}")
-
-        # Format channel name with counts
-        channel_name = f"{CHECK} {online_count} {WARN} {offline_count} {CROSS} {dead_count} {RESERVED} {reserved_count}"
-
-        # Update channel name
-        await bot.rest.edit_channel(int(channel_id), name=channel_name)
-        logger.info(f"Updated channel name to: {channel_name}")
+                logger.error(f"Error updating channel for category {category_id}: {e}")
+                continue
 
     except Exception as e:
-        logger.error(f"Error updating channel name: {e}")
+        logger.error(f"Error updating channel names: {e}")
 
 async def periodic_channel_update():
     """Periodically update channel name"""
@@ -538,11 +822,10 @@ async def periodic_channel_update():
             # Wait 60 seconds before retrying on error
             await asyncio.sleep(60)
 
-async def check_reserved_repeater_and_add_owner(node, prefix):
-    """Check if a new repeater matches a reserved node and add to repeaterOwners.json"""
+async def check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file="reservedNodes.json", owner_file="repeaterOwners.json"):
+    """Check if a new repeater matches a reserved node and add to category-specific repeaterOwners file"""
     try:
-        # Load reservedNodes.json
-        reserved_nodes_file = "reservedNodes.json"
+        # Use the provided reserved_nodes_file (category-specific)
         if not os.path.exists(reserved_nodes_file):
             return
 
@@ -566,8 +849,7 @@ async def check_reserved_repeater_and_add_owner(node, prefix):
         if not public_key:
             return
 
-        # Load or create repeaterowners.json
-        owners_file = "repeaterOwners.json"
+        # Use the provided owner_file (category-specific)
         if os.path.exists(owners_file):
             try:
                 with open(owners_file, 'r') as f:
@@ -614,120 +896,150 @@ async def check_reserved_repeater_and_add_owner(node, prefix):
         logger.error(f"Error checking reserved repeater and adding owner: {e}")
 
 async def check_for_new_nodes():
-    """Check nodes.json for new nodes and send Discord notifications"""
+    """Check all category-specific nodes files for new nodes and send Discord notifications to appropriate channels"""
     global known_node_keys
 
     try:
-        nodes_file = "nodes.json"
-        if not os.path.exists(nodes_file):
-            logger.warning(f"{nodes_file} not found - skipping node check")
-            return
+        # Get all category sections from config
+        all_sections = config.sections()
 
-        # Retry logic to handle race conditions when file is being written
-        max_retries = 3
-        retry_delay = 0.5  # seconds
-
-        for attempt in range(max_retries):
+        # Filter to only category sections (numeric section names)
+        category_sections = []
+        for section in all_sections:
             try:
-                # Check if file is empty before trying to parse
-                if os.path.getsize(nodes_file) == 0:
-                    if attempt < max_retries - 1:
-                        logger.debug(f"{nodes_file} is empty, retrying in {retry_delay}s...")
-                        await asyncio.sleep(retry_delay)
-                        continue
-                    else:
-                        logger.warning(f"{nodes_file} is empty after {max_retries} attempts - skipping")
-                        return
+                # Try to convert to int to see if it's a category ID
+                category_id = int(section)
+                # Check if it has nodes_file and messenger_channel_id
+                if config.has_option(section, "nodes_file") and config.has_option(section, "messenger_channel_id"):
+                    category_sections.append((category_id, section))
+            except (ValueError, TypeError):
+                # Not a numeric section, skip it
+                continue
 
-                with open(nodes_file, 'r') as f:
-                    content = f.read().strip()
-                    if not content:
+        # Track all current nodes across all categories
+        all_current_node_keys = set()
+        all_current_nodes_map = {}  # Map public_key to (node_data, category_id, messenger_channel_id)
+
+        # Check each category's nodes file
+        for category_id, section in category_sections:
+            try:
+                nodes_file = config.get(section, "nodes_file", fallback="nodes.json")
+                messenger_channel_id = config.get(section, "messenger_channel_id", fallback=None)
+                reserved_nodes_file = config.get(section, "reserved_nodes_file", fallback="reservedNodes.json")
+                owner_file = config.get(section, "owner_file", fallback="repeaterOwners.json")
+
+                if not messenger_channel_id:
+                    continue
+
+                if not os.path.exists(nodes_file):
+                    logger.debug(f"{nodes_file} not found for category {category_id} - skipping")
+                    continue
+
+                # Retry logic to handle race conditions when file is being written
+                max_retries = 3
+                retry_delay = 0.5  # seconds
+                nodes_data = None
+
+                for attempt in range(max_retries):
+                    try:
+                        # Check if file is empty before trying to parse
+                        if os.path.getsize(nodes_file) == 0:
+                            if attempt < max_retries - 1:
+                                logger.debug(f"{nodes_file} is empty, retrying in {retry_delay}s...")
+                                await asyncio.sleep(retry_delay)
+                                continue
+                            else:
+                                logger.warning(f"{nodes_file} is empty after {max_retries} attempts - skipping")
+                                break
+
+                        with open(nodes_file, 'r') as f:
+                            content = f.read().strip()
+                            if not content:
+                                if attempt < max_retries - 1:
+                                    logger.debug(f"{nodes_file} appears empty, retrying in {retry_delay}s...")
+                                    await asyncio.sleep(retry_delay)
+                                    continue
+                                else:
+                                    logger.warning(f"{nodes_file} is empty after {max_retries} attempts - skipping")
+                                    break
+
+                        # Parse JSON
+                        nodes_data = json.loads(content)
+                        # Normalize field names in all nodes
+                        if isinstance(nodes_data, dict) and 'data' in nodes_data:
+                            for node in nodes_data.get('data', []):
+                                normalize_node(node)
+                        break  # Success, exit retry loop
+
+                    except json.JSONDecodeError as e:
                         if attempt < max_retries - 1:
-                            logger.debug(f"{nodes_file} appears empty, retrying in {retry_delay}s...")
+                            logger.debug(f"Error parsing {nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
                             await asyncio.sleep(retry_delay)
                             continue
                         else:
-                            logger.warning(f"{nodes_file} is empty after {max_retries} attempts - skipping")
-                            return
+                            logger.error(f"Error parsing {nodes_file}: {e}")
+                            break
 
-                    # Parse JSON
-                    nodes_data = json.loads(content)
-                    # Normalize field names in all nodes
-                    if isinstance(nodes_data, dict) and 'data' in nodes_data:
-                        for node in nodes_data.get('data', []):
-                            normalize_node(node)
-                    break  # Success, exit retry loop
-
-            except json.JSONDecodeError as e:
-                if attempt < max_retries - 1:
-                    logger.debug(f"Error parsing {nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
-                    await asyncio.sleep(retry_delay)
+                if nodes_data is None:
                     continue
-                else:
-                    # Last attempt failed, raise the error
-                    raise
 
-        current_node_keys = set()
-        current_nodes_map = {}  # Map public_key to full node data
+                # Extract all current node keys and create a map with category info
+                for node in nodes_data.get('data', []):
+                    public_key = node.get('public_key')
+                    if public_key:
+                        all_current_node_keys.add(public_key)
+                        # Store node with its category and channel info
+                        all_current_nodes_map[public_key] = (node, category_id, messenger_channel_id, reserved_nodes_file, owner_file)
 
-        # Extract all current node keys and create a map
-        for node in nodes_data.get('data', []):
-            public_key = node.get('public_key')
-            if public_key:
-                current_node_keys.add(public_key)
-                current_nodes_map[public_key] = node
+            except Exception as e:
+                logger.error(f"Error processing category {category_id}: {e}")
+                continue
 
         # If this is the first check, initialize known_node_keys
         if not known_node_keys:
-            known_node_keys = current_node_keys.copy()
-            logger.info(f"Initialized node watcher with {len(known_node_keys)} existing nodes")
+            known_node_keys = all_current_node_keys.copy()
+            logger.info(f"Initialized node watcher with {len(known_node_keys)} existing nodes across all categories")
             return
 
         # Find new nodes
-        new_node_keys = current_node_keys - known_node_keys
+        new_node_keys = all_current_node_keys - known_node_keys
 
         if new_node_keys:
             logger.info(f"Found {len(new_node_keys)} new node(s)")
 
-            # Get channel ID from config
-            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
-            if not channel_id:
-                logger.warning("No messenger_channel_id specified in config.ini - skipping new node notification")
-            else:
-                # Send notification for each new node
-                for public_key in new_node_keys:
-                    node = current_nodes_map.get(public_key)
-                    if not node:
-                        continue
+            # Send notification for each new node to its category's messenger channel
+            for public_key in new_node_keys:
+                if public_key not in all_current_nodes_map:
+                    continue
 
-                    # Format node information
-                    node_name = node.get('name', 'Unknown')
-                    prefix = public_key[:2].upper() if public_key else '??'
+                node, category_id, messenger_channel_id, reserved_nodes_file, owner_file = all_current_nodes_map[public_key]
 
-                    # Fetch server emojis
-                    emoji_new = await get_server_emoji(int(channel_id), "meshBuddy_new")
-                    emoji_salute = await get_server_emoji(int(channel_id), "meshBuddy_salute")
-                    emoji_wcmesh = await get_server_emoji(int(channel_id), "WCMESH")
+                # Format node information
+                node_name = node.get('name', 'Unknown')
+                prefix = public_key[:2].upper() if public_key else '??'
 
-                    if node.get('device_role') == 2:
-                        message = f"## {emoji_new}  **NEW REPEATER ALERT**\n**{prefix}: {node_name}** has expanded our mesh!\nThank you for your service {emoji_salute}"
-                        # Check if this repeater matches a reserved node and add to repeaterOwners.json
-                        await check_reserved_repeater_and_add_owner(node, prefix)
+                # Fetch server emojis
+                emoji_new = await get_server_emoji(int(messenger_channel_id), "meshBuddy_new")
+                emoji_salute = await get_server_emoji(int(messenger_channel_id), "meshBuddy_salute")
+                emoji_wcmesh = await get_server_emoji(int(messenger_channel_id), "WCMESH")
 
-                        try:
-                            await bot.rest.create_message(int(channel_id), content=message)
-                            logger.info(f"Sent notification for new node: {prefix} - {node_name}")
-                        except Exception as e:
-                            logger.error(f"Error sending new node notification: {e}")
+                if node.get('device_role') == 2:
+                    message = f"## {emoji_new}  **NEW REPEATER ALERT**\n**{prefix}: {node_name}** has expanded our mesh!\nThank you for your service {emoji_salute}"
+                    # Check if this repeater matches a reserved node and add to category-specific owner file
+                    await check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file, owner_file)
 
-                    # elif node.get('device_role') == 1:
-                    #     message = f"## {emoji_new}  **NEW COMPANION ALERT**\nSay hi to **{node_name}** on West Coast Mesh {emoji_wcmesh} 927.875"
+                    try:
+                        await bot.rest.create_message(int(messenger_channel_id), content=message)
+                        logger.info(f"Sent notification for new node: {prefix} - {node_name} to category {category_id} channel")
+                    except Exception as e:
+                        logger.error(f"Error sending new node notification to category {category_id}: {e}")
 
-            # Update known_node_keys
-            known_node_keys = current_node_keys.copy()
+                # elif node.get('device_role') == 1:
+                #     message = f"## {emoji_new}  **NEW COMPANION ALERT**\nSay hi to **{node_name}** on West Coast Mesh {emoji_wcmesh} 927.875"
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Error parsing nodes.json: {e}")
+        # Update known_node_keys
+        known_node_keys = all_current_node_keys.copy()
+
     except Exception as e:
         logger.error(f"Error checking for new nodes: {e}")
 
@@ -850,7 +1162,7 @@ async def on_starting(event: hikari.StartingEvent):
 
 @client.register()
 class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
-    description="Get list of active repeaters"):
+    description="Get list of active repeaters", hooks=[category_check]):
 
     days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
 
@@ -858,9 +1170,8 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of active repeaters"""
         try:
-            # Load all repeaters directly from nodes.json instead of using time-filtered extract_device_types
-            # This ensures all nodes are shown, and we filter by days in the display logic
-            data = load_data_from_json("nodes.json")
+            # Load nodes data based on the category where the command was invoked
+            data = await get_nodes_data_for_context(ctx)
             if data is None:
                 await ctx.respond("Error retrieving repeater list.")
                 return
@@ -925,9 +1236,10 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                             lines.append(f"{CHECK} {prefix}: {name}")
 
             # Add reserved nodes that aren't already active
-            if os.path.exists("reservedNodes.json"):
+            reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
+            if os.path.exists(reserved_nodes_file):
                 try:
-                    with open("reservedNodes.json", 'r') as f:
+                    with open(reserved_nodes_file, 'r') as f:
                         reserved_data = json.load(f)
                         for node in reserved_data.get('data', []):
                             prefix = node.get('prefix', '').upper()
@@ -936,7 +1248,7 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                             if prefix and prefix not in active_prefixes:
                                 lines.append(f"{RESERVED} {prefix}: {name}")
                 except Exception as e:
-                    logger.debug(f"Error reading reservedNodes.json: {e}")
+                    logger.debug(f"Error reading reserved nodes file: {e}")
 
             lines.sort(key=extract_prefix_for_sort)
 
@@ -953,7 +1265,7 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
 
 @client.register()
 class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
-    description="Get list of offline repeaters"):
+    description="Get list of offline repeaters", hooks=[category_check]):
 
     days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
@@ -961,7 +1273,7 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of offline repeaters"""
         try:
-            devices = extract_device_types(device_types=['repeaters'], days=self.days)
+            devices = await get_extract_device_types_for_context(ctx, device_types=['repeaters'], days=self.days)
             if devices is None:
                 await ctx.respond("Error retrieving offline repeaters.")
                 return
@@ -998,7 +1310,7 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
 
 @client.register()
 class OpenKeysCommand(lightbulb.SlashCommand, name="open",
-    description="Get list of unused hex keys"):
+    description="Get list of unused hex keys", hooks=[category_check]):
 
     days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
 
@@ -1006,7 +1318,7 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of unused hex keys"""
         try:
-            unused_keys = get_unused_keys(days=self.days)
+            unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
             if unused_keys:
                 # Group keys by tens digit (first hex digit)
                 grouped_keys = {}
@@ -1034,7 +1346,7 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
 
 @client.register()
 class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
-    description="Get list of duplicate repeater prefixes"):
+    description="Get list of duplicate repeater prefixes", hooks=[category_check]):
 
     days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
 
@@ -1042,7 +1354,7 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of duplicate repeater prefixes"""
         try:
-            devices = extract_device_types(device_types=['repeaters'], days=self.days)
+            devices = await get_extract_device_types_for_context(ctx, device_types=['repeaters'], days=self.days)
             if devices is None:
                 await ctx.respond("Error retrieving duplicate prefixes.")
                 return
@@ -1091,7 +1403,7 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
 
 @client.register()
 class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
-    description="Check if a hex prefix is available"):
+    description="Check if a hex prefix is available", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
     days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
@@ -1107,10 +1419,11 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/prefix A1`")
                 return
 
-            # Check reservedNodes.json first
-            if os.path.exists("reservedNodes.json"):
+            # Check reserved nodes file first
+            reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
+            if os.path.exists(reserved_nodes_file):
                 try:
-                    with open("reservedNodes.json", 'r') as f:
+                    with open(reserved_nodes_file, 'r') as f:
                         reserved_data = json.load(f)
                         for node in reserved_data.get('data', []):
                             if node.get('prefix', '').upper() == hex_prefix:
@@ -1118,16 +1431,16 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                                 await ctx.respond(message)
                                 return
                 except Exception as e:
-                    logger.debug(f"Error reading reservedNodes.json: {e}")
+                    logger.debug(f"Error reading reserved nodes file: {e}")
 
             # Get unused keys
-            unused_keys = get_unused_keys(days=self.days)
+            unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
 
             if unused_keys and hex_prefix in unused_keys:
                 message = f"{CHECK} {hex_prefix} is **AVAILABLE** for use!"
             else:
                 # Get repeater information for the prefix
-                repeaters = get_repeater(hex_prefix, days=self.days)
+                repeaters = await get_repeater_for_context(ctx, hex_prefix, days=self.days)
 
                 # Filter out removed nodes
                 if repeaters:
@@ -1156,7 +1469,7 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
 
 @client.register()
 class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
-    description="Get the stats of a repeater"):
+    description="Get the stats of a repeater", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
     days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
@@ -1173,7 +1486,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                 return
 
             # Get repeaters (now returns a list)
-            repeaters = get_repeater(hex_prefix, days=self.days)
+            repeaters = await get_repeater_for_context(ctx, hex_prefix, days=self.days)
 
             # Filter out removed nodes
             if repeaters:
@@ -1247,7 +1560,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
 
 @client.register()
 class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
-    description="Reserve a hex prefix for a repeater"):
+    description="Reserve a hex prefix for a repeater", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
     name = lightbulb.string('name', 'Repeater name')
@@ -1265,8 +1578,8 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
 
             name = self.name.strip()
 
-            # Load existing reservedNodes.json or create new structure
-            reserved_nodes_file = "reservedNodes.json"
+            # Load existing reservedNodes.json or create new structure (category-specific)
+            reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
             if os.path.exists(reserved_nodes_file):
                 with open(reserved_nodes_file, 'r') as f:
                     reserved_data = json.load(f)
@@ -1288,7 +1601,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                 return
 
             # Check if prefix is currently in use by an active repeater
-            unused_keys = get_unused_keys(days=7)
+            unused_keys = await get_unused_keys_for_context(ctx, days=7)
             if unused_keys is None:
                 await ctx.respond("Error: Could not check prefix availability. Please try again.")
                 return
@@ -1296,7 +1609,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
             # Check if prefix is in unused keys (available for reservation)
             if hex_prefix not in unused_keys:
                 # Prefix is currently in use - get repeater info to show who's using it
-                repeaters = get_repeater(hex_prefix, days=7)
+                repeaters = await get_repeater_for_context(ctx, hex_prefix, days=7)
                 if repeaters:
                     # Filter out removed nodes
                     repeaters = [r for r in repeaters if not is_node_removed(r)]
@@ -1345,7 +1658,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
 
 @client.register()
 class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
-    description="Release a hex prefix for a repeater"):
+    description="Release a hex prefix for a repeater", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
 
@@ -1360,8 +1673,8 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
                 await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`")
                 return
 
-            # Load existing customNodes.json
-            reserved_nodes_file = "reservedNodes.json"
+            # Load existing reservedNodes.json (category-specific)
+            reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
             if not os.path.exists(reserved_nodes_file):
                 await ctx.respond("Error: list does not exist)")
                 return
@@ -1397,7 +1710,7 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
 
 @client.register()
 class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
-    description="Remove a repeater from the repeater list"):
+    description="Remove a repeater from the repeater list", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
 
@@ -1412,14 +1725,11 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
                 await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`")
                 return
 
-            # Load nodes.json
-            nodes_file = "nodes.json"
-            if not os.path.exists(nodes_file):
-                await ctx.respond("Error: nodes.json not found")
+            # Load nodes.json (category-specific)
+            nodes_data = await get_nodes_data_for_context(ctx)
+            if nodes_data is None:
+                await ctx.respond("Error: nodes data not found")
                 return
-
-            with open(nodes_file, 'r') as f:
-                nodes_data = json.load(f)
 
             # Find all repeaters with matching prefix (device_role == 2)
             nodes_list = nodes_data.get('data', [])
@@ -1432,7 +1742,9 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
                 # Only consider repeaters (device_role == 2)
                 if node_prefix == hex_prefix and node.get('device_role') == 2:
                     # Check if already removed
-                    if not is_node_removed(node):
+                    # Check if already removed using category-specific removed nodes file
+                    removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                    if not is_node_removed_in_file(node, removed_nodes_file):
                         matching_repeaters.append(node)
 
             if not matching_repeaters:
@@ -1578,7 +1890,7 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
 
 @client.register()
 class QRCodeCommand(lightbulb.SlashCommand, name="qr",
-    description="Generate a QR code for adding a contact"):
+    description="Generate a QR code for adding a contact", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
 
@@ -1594,7 +1906,7 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
                 return
 
             # Get repeaters (now returns a list)
-            repeaters = get_repeater(hex_prefix)
+            repeaters = await get_repeater_for_context(ctx, hex_prefix)
 
             # Filter out removed nodes
             if repeaters:
@@ -1690,9 +2002,10 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
         try:
             lines = []
 
-            if os.path.exists("removedNodes.json"):
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+            if os.path.exists(removed_nodes_file):
                 try:
-                    with open("removedNodes.json", 'r') as f:
+                    with open(removed_nodes_file, 'r') as f:
                         removed_data = json.load(f)
                         for node in removed_data.get('data', []):
                             public_key = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
@@ -1725,9 +2038,10 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
         try:
             lines = []
 
-            if os.path.exists("reservedNodes.json"):
+            reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
+            if os.path.exists(reserved_nodes_file):
                 try:
-                    with open("reservedNodes.json", 'r') as f:
+                    with open(reserved_nodes_file, 'r') as f:
                         reserved_data = json.load(f)
                         for node in reserved_data.get('data', []):
                             prefix = node.get('prefix', '').upper() if node.get('prefix') else ''
@@ -1735,7 +2049,7 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                             if prefix and name:
                                 lines.append(f"{RESERVED} {prefix}: {name}")
                 except Exception as e:
-                    logger.debug(f"Error reading reservedNodes.json: {e}")
+                    logger.debug(f"Error reading reserved nodes file: {e}")
 
             lines.sort(key=extract_prefix_for_sort)
 
@@ -1752,7 +2066,7 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
 
 @client.register()
 class KeygenCommand(lightbulb.SlashCommand, name="keygen",
-    description="Generate a MeshCore keypair with a specific prefix"):
+    description="Generate a MeshCore keypair with a specific prefix", hooks=[category_check]):
 
     text = lightbulb.string('prefix', 'Hex prefix (e.g., F8A1)')
 
@@ -1823,7 +2137,7 @@ class KeygenCommand(lightbulb.SlashCommand, name="keygen",
 
 @client.register()
 class HelpCommand(lightbulb.SlashCommand, name="help",
-    description="Show all available commands"):
+    description="Show all available commands", hooks=[category_check]):
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
