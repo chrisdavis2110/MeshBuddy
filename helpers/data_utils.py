@@ -72,7 +72,7 @@ def load_data_from_json(filename="nodes.json", data_dir=None):
         with open(filepath, 'r') as f:
             loaded_data = json.load(f)
 
-        print(f"Data loaded from {filepath}")
+        # print(f"Data loaded from {filepath}")
         return loaded_data
     except Exception as e:
         logger.error(f"Error loading data from JSON: {str(e)}")

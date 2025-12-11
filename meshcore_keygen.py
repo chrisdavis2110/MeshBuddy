@@ -30,7 +30,7 @@ Features:
 
 Cosmetic Pattern Modes:
   --pattern-2: First 2 hex chars == last 2 hex chars OR palindromic
-  --pattern-4: First 4 hex chars == last 4 hex chars OR palindromic  
+  --pattern-4: First 4 hex chars == last 4 hex chars OR palindromic
   --pattern-6: First 6 hex chars == last 6 hex chars OR palindromic
   --pattern-8: First 8 hex chars == last 8 hex chars OR palindromic (default)
   --four-char: Legacy mode with 4-char vanity + optional --first-two constraint
@@ -112,30 +112,30 @@ class WatchlistPattern:
     last_chars: str   # Last part of pattern
     first_length: int  # Length of first part
     last_length: int   # Length of last part
-    
+
     @classmethod
     def from_string(cls, pattern_str: str, description: str = "") -> 'WatchlistPattern':
         """Create a WatchlistPattern from a string like 'ABCD...EFGH'."""
         if '...' not in pattern_str:
             raise ValueError(f"Invalid pattern format: {pattern_str}. Must contain '...'")
-        
+
         parts = pattern_str.split('...')
         if len(parts) != 2:
             raise ValueError(f"Invalid pattern format: {pattern_str}. Must have exactly one '...'")
-        
+
         first_part = parts[0].strip()
         last_part = parts[1].strip()
-        
+
         if not first_part or not last_part:
             raise ValueError(f"Invalid pattern format: {pattern_str}. Both parts must be non-empty")
-        
+
         # Validate hex characters
         try:
             int(first_part, 16)
             int(last_part, 16)
         except ValueError:
             raise ValueError(f"Invalid pattern format: {pattern_str}. Parts must be valid hex")
-        
+
         return cls(
             pattern=pattern_str,
             description=description,
@@ -144,10 +144,10 @@ class WatchlistPattern:
             first_length=len(first_part),
             last_length=len(last_part)
         )
-    
+
     def matches(self, public_hex: str) -> bool:
         """Check if a public key matches this pattern."""
-        return (public_hex[:self.first_length] == self.first_chars and 
+        return (public_hex[:self.first_length] == self.first_chars and
                 public_hex[-self.last_length:] == self.last_chars)
 
 
@@ -192,16 +192,16 @@ class BatchResult:
 def load_watchlist_patterns(file_path: str) -> List[WatchlistPattern]:
     """Load watchlist patterns from a file."""
     patterns = []
-    
+
     try:
         with open(file_path, 'r') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
-                
+
                 # Skip empty lines and comments
                 if not line or line.startswith('#'):
                     continue
-                
+
                 # Parse pattern and optional description
                 if '|' in line:
                     pattern_part, description = line.split('|', 1)
@@ -210,17 +210,17 @@ def load_watchlist_patterns(file_path: str) -> List[WatchlistPattern]:
                 else:
                     pattern_part = line.strip()
                     description = ""
-                
+
                 try:
                     pattern = WatchlistPattern.from_string(pattern_part, description)
                     patterns.append(pattern)
                 except ValueError as e:
                     print(f"Warning: Invalid pattern on line {line_num}: {e}")
                     continue
-        
+
         print(f"Loaded {len(patterns)} watchlist patterns from {file_path}")
         return patterns
-        
+
     except FileNotFoundError:
         print(f"Warning: Watchlist file not found: {file_path}")
         return []
@@ -234,32 +234,32 @@ def save_watchlist_key(key_info: KeyInfo, pattern: WatchlistPattern) -> Tuple[st
     # Create a safe filename from the pattern
     safe_pattern = pattern.pattern.replace('...', '_').replace('|', '_')
     key_id = key_info.public_hex[:8].upper()
-    
+
     pub_filename = f"watchlist_{safe_pattern}_{key_id}_public.txt"
     priv_filename = f"watchlist_{safe_pattern}_{key_id}_private.txt"
-    
+
     with open(pub_filename, 'w') as f:
         f.write(key_info.public_hex)
-    
+
     with open(priv_filename, 'w') as f:
         f.write(key_info.private_hex)
-    
+
     print(f"  Saved watchlist key to:")
     print(f"    Public:  {pub_filename}")
     print(f"    Private: {priv_filename}")
-    
+
     return pub_filename, priv_filename
 
 
 class KeyValidator:
     """Validates generated keys against patterns."""
-    
+
     @staticmethod
     def check_vanity_pattern(public_hex: str, config: VanityConfig) -> bool:
         """Check if a public key matches the desired vanity pattern."""
         # Convert to uppercase once to avoid repeated conversions
         public_hex_upper = public_hex.upper()
-        
+
         if config.mode == VanityMode.SIMPLE:
             return KeyValidator._check_simple_pattern(public_hex_upper, config.target_first_two)
         elif config.mode == VanityMode.PREFIX:
@@ -278,7 +278,7 @@ class KeyValidator:
             return KeyValidator._check_prefix_vanity_pattern(public_hex_upper, config.target_prefix, config.vanity_length)
         else:  # DEFAULT
             return KeyValidator._check_default_pattern(public_hex_upper, config.target_first_two)
-    
+
     @staticmethod
     def check_watchlist_patterns(public_hex: str, config: VanityConfig) -> List[WatchlistPattern]:
         """Check if a public key matches any watchlist patterns."""
@@ -290,14 +290,14 @@ class KeyValidator:
                 if pattern.matches(public_hex_upper):
                     matches.append(pattern)
         return matches
-    
+
     @staticmethod
     def _check_simple_pattern(public_hex: str, target_first_two: Optional[str]) -> bool:
         """Check simple pattern: specific first two hex characters."""
         if not target_first_two:
             return True
         return public_hex[:2] == target_first_two.upper()
-    
+
     @staticmethod
     def _check_prefix_pattern(public_hex: str, target_prefix: Optional[str]) -> bool:
         """Check prefix pattern: key starts with specific prefix."""
@@ -305,14 +305,14 @@ class KeyValidator:
             return False
         prefix_length = len(target_prefix)
         return public_hex[:prefix_length] == target_prefix.upper()
-    
+
     @staticmethod
     def _check_vanity_n_pattern(public_hex: str, n: int) -> bool:
         """Check if first n hex chars match last n hex chars or are palindromic."""
         first_n = public_hex[:n]
         last_n = public_hex[-n:]
         return first_n == last_n or first_n == last_n[::-1]
-    
+
     @staticmethod
     def _check_four_char_pattern(public_hex: str, target_first_two: Optional[str]) -> bool:
         """Check four-char pattern with optional first-two constraint."""
@@ -321,13 +321,13 @@ class KeyValidator:
         if target_first_two:
             return KeyValidator._check_simple_pattern(public_hex, target_first_two)
         return True
-    
+
     @staticmethod
     def _check_prefix_vanity_pattern(public_hex: str, target_prefix: Optional[str], vanity_length: int = 8) -> bool:
         """Check prefix-vanity pattern: specific prefix AND n-char vanity."""
-        return (KeyValidator._check_prefix_pattern(public_hex, target_prefix) and 
+        return (KeyValidator._check_prefix_pattern(public_hex, target_prefix) and
                 KeyValidator._check_vanity_n_pattern(public_hex, vanity_length))
-    
+
     @staticmethod
     def _check_default_pattern(public_hex: str, target_first_two: Optional[str]) -> bool:
         """Check default pattern: 8-char vanity with optional first-two constraint."""
@@ -340,7 +340,7 @@ class KeyValidator:
 
 class Ed25519KeyGenerator:
     """Generates Ed25519 keys in MeshCore format using the CORRECT algorithm."""
-    
+
     @staticmethod
     def generate_meshcore_keypair():
         """
@@ -354,31 +354,31 @@ class Ed25519KeyGenerator:
         """
         # Step 1: Generate 32-byte random seed
         seed = random_bytes(32)
-        
+
         # Step 2: Hash the seed with SHA512
         digest = hashlib.sha512(seed).digest()
-        
+
         # Step 3: Clamp the first 32 bytes according to Ed25519 rules
         clamped = bytearray(digest[:32])
         clamped[0] &= 248      # Clear bottom 3 bits (make it divisible by 8)
         clamped[31] &= 63      # Clear top 2 bits
         clamped[31] |= 64      # Set bit 6 (ensure it's in the right range)
-        
+
         # Step 4: Use the clamped scalar to generate the public key
         public_key = crypto_scalarmult_ed25519_base_noclamp(bytes(clamped))
-        
+
         # Step 5: Create 64-byte private key [clamped_scalar][sha512_prefix]
         # Per RFC 8032, the second 32 bytes should be SHA-512(seed)[32:64]
         private_key = bytes(clamped) + digest[32:64]
-        
+
         return public_key, private_key
-    
+
     @staticmethod
     def generate_single_key(config: VanityConfig) -> Optional[KeyInfo]:
         """Generate a single Ed25519 key in MeshCore format."""
         public_bytes, private_bytes = Ed25519KeyGenerator.generate_meshcore_keypair()
         public_hex = public_bytes.hex()
-        
+
         if KeyValidator.check_vanity_pattern(public_hex, config):
             return KeyInfo(
                 public_hex=public_hex,
@@ -389,15 +389,15 @@ class Ed25519KeyGenerator:
                 first_8_hex=public_hex[:8],
                 last_8_hex=public_hex[-8:]
             )
-        
+
         return None
-    
+
     @staticmethod
     def generate_any_key() -> KeyInfo:
         """Generate any Ed25519 key in MeshCore format (no pattern constraints)."""
         public_bytes, private_bytes = Ed25519KeyGenerator.generate_meshcore_keypair()
         public_hex = public_bytes.hex()
-        
+
         return KeyInfo(
             public_hex=public_hex,
             private_hex=private_bytes.hex(),  # 128 hex characters (64 bytes)
@@ -407,26 +407,26 @@ class Ed25519KeyGenerator:
             first_8_hex=public_hex[:8],
             last_8_hex=public_hex[-8:]
         )
-    
+
     @staticmethod
     def verify_key_compatibility(private_hex: str, expected_public_hex: str) -> bool:
         """Verify that a MeshCore private key produces the expected public key."""
         try:
             private_bytes = bytes.fromhex(private_hex)
-            
+
             if len(private_bytes) != 64:
                 print(f"Error: Private key must be 64 bytes, got {len(private_bytes)}")
                 return False
-            
+
             # Extract the clamped scalar (first 32 bytes)
             clamped_scalar = private_bytes[:32]
-            
+
             # Regenerate the public key using MeshCore's method
             derived_public_bytes = crypto_scalarmult_ed25519_base_noclamp(clamped_scalar)
             derived_public_hex = derived_public_bytes.hex()
-            
+
             return derived_public_hex == expected_public_hex
-            
+
         except Exception as e:
             print(f"Key verification failed: {e}")
             return False
@@ -434,7 +434,7 @@ class Ed25519KeyGenerator:
 
 class SystemUtils:
     """Utility functions for system information."""
-    
+
     @staticmethod
     def get_optimal_worker_count() -> int:
         """Detect optimal number of worker processes."""
@@ -444,7 +444,7 @@ class SystemUtils:
             return SystemUtils._get_macos_worker_count()
         else:
             return SystemUtils._get_linux_amd64_worker_count()
-    
+
     @staticmethod
     def _get_windows_worker_count() -> int:
         """Get optimal worker count for Windows."""
@@ -454,12 +454,12 @@ class SystemUtils:
         print(f"Windows detected: {cpu_count} logical cores")
         print(f"Using {recommended_workers} workers (75% of available cores)")
         return recommended_workers
-    
+
     @staticmethod
     def _get_macos_worker_count() -> int:
         """Get optimal worker count for macOS."""
         try:
-            result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], 
+            result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'],
                                   capture_output=True, text=True, check=False)
             if 'Apple' in result.stdout:
                 return SystemUtils._get_apple_silicon_cores()
@@ -468,12 +468,12 @@ class SystemUtils:
         except Exception as e:
             print(f"Warning: Could not detect processor type: {e}")
             return mp.cpu_count()
-    
+
     @staticmethod
     def _get_apple_silicon_cores() -> int:
         """Get performance cores for Apple Silicon."""
         try:
-            result = subprocess.run(['sysctl', '-n', 'hw.perflevel0.physicalcpu'], 
+            result = subprocess.run(['sysctl', '-n', 'hw.perflevel0.physicalcpu'],
                                   capture_output=True, text=True, check=False)
             if result.returncode == 0:
                 perf_cores = int(result.stdout.strip())
@@ -481,10 +481,10 @@ class SystemUtils:
                 return perf_cores
         except Exception:
             pass
-        
+
         # Fallback estimation
         try:
-            result = subprocess.run(['sysctl', '-n', 'hw.ncpu'], 
+            result = subprocess.run(['sysctl', '-n', 'hw.ncpu'],
                                   capture_output=True, text=True, check=False)
             if result.returncode == 0:
                 total_cores = int(result.stdout.strip())
@@ -493,9 +493,9 @@ class SystemUtils:
                 return perf_cores
         except Exception:
             pass
-        
+
         return 4  # Safe fallback
-    
+
     @staticmethod
     def _estimate_apple_perf_cores(total_cores: int) -> int:
         """Estimate Apple Silicon performance cores from total cores."""
@@ -505,12 +505,12 @@ class SystemUtils:
             return 6  # M2/M3/M4 with 6-8 perf cores
         else:
             return 4  # M1 or M2 with 4 perf cores
-    
+
     @staticmethod
     def _get_intel_mac_cores() -> int:
         """Get optimal cores for Intel Mac."""
         try:
-            result = subprocess.run(['sysctl', '-n', 'hw.physicalcpu'], 
+            result = subprocess.run(['sysctl', '-n', 'hw.physicalcpu'],
                                   capture_output=True, text=True, check=False)
             if result.returncode == 0:
                 physical_cores = int(result.stdout.strip())
@@ -521,14 +521,14 @@ class SystemUtils:
                 return recommended_cores
         except Exception:
             pass
-        
+
         # Fallback: use 75% of logical cores
         cpu_count = mp.cpu_count()
         recommended_cores = max(2, round(cpu_count * 0.75))
         print(f"Intel Mac fallback: {cpu_count} logical cores")
         print(f"Using {recommended_cores} cores (75% of available cores)")
         return recommended_cores
-    
+
     @staticmethod
     def _get_linux_amd64_worker_count() -> int:
         """Get optimal worker count for Linux/AMD64 systems."""
@@ -542,7 +542,7 @@ class SystemUtils:
 
 class HealthMonitor:
     """Monitors system health and performance metrics."""
-    
+
     def __init__(self, worker_id: int, config: VanityConfig):
         self.worker_id = worker_id
         self.config = config
@@ -556,30 +556,30 @@ class HealthMonitor:
         self.memory_check_interval = 30  # Check memory every 30 seconds (reduced frequency)
         self.memory_threshold = 200 * 1024 * 1024  # 200MB increase threshold (increased threshold)
         self.performance_threshold = 0.7  # 70% performance degradation threshold
-        
+
     def _get_memory_usage(self) -> int:
         """Get current memory usage in bytes."""
         if not PSUTIL_AVAILABLE:
             return 0
-        
+
         try:
             process = psutil.Process()
             return process.memory_info().rss
         except Exception:
             return 0
-    
+
     def _get_cpu_usage(self) -> float:
         """Get current CPU usage percentage."""
         if not PSUTIL_AVAILABLE:
             return 0.0
-        
+
         try:
             process = psutil.Process()
             # Use non-blocking CPU check to avoid 0.1s delay
             return process.cpu_percent(interval=None)
         except Exception:
             return 0.0
-    
+
     def check_health(self, current_rate: float, batch_attempts: int, batch_time: float) -> Dict[str, Any]:
         """Check system health and return health status."""
         current_time = time.time()
@@ -591,69 +591,69 @@ class HealthMonitor:
             'cpu_usage': 0.0,
             'performance_ratio': 1.0
         }
-        
+
         # Check memory usage (only if psutil is available)
         if PSUTIL_AVAILABLE and current_time - self.last_memory_check >= self.memory_check_interval:
             current_memory = self._get_memory_usage()
             memory_increase = current_memory - self.initial_memory
-            
+
             health_status['memory_usage'] = current_memory
             health_status['cpu_usage'] = self._get_cpu_usage()
-            
+
             if memory_increase > self.memory_threshold:
                 health_status['warnings'].append(f"Memory usage increased by {memory_increase / 1024 / 1024:.1f}MB")
                 health_status['actions_taken'].append("Triggered garbage collection")
                 gc.collect()
                 self.last_gc_time = current_time
-            
+
             self.last_memory_check = current_time
-        
+
         # Force periodic garbage collection (always available)
         if current_time - self.last_gc_time >= self.gc_interval:
             health_status['actions_taken'].append("Periodic garbage collection")
             gc.collect()
             self.last_gc_time = current_time
-        
+
         # Track performance
         if batch_time > 0:
             current_rate = batch_attempts / batch_time
             self.performance_history.append(current_rate)
-            
+
             # Keep only recent history
             if len(self.performance_history) > self.max_history_size:
                 self.performance_history.pop(0)
-            
+
             # Calculate performance ratio
             if len(self.performance_history) >= 3:
                 recent_avg = sum(self.performance_history[-3:]) / 3
                 older_avg = sum(self.performance_history[:-3]) / max(1, len(self.performance_history) - 3)
-                
+
                 if older_avg > 0:
                     performance_ratio = recent_avg / older_avg
                     health_status['performance_ratio'] = performance_ratio
-                    
+
                     if performance_ratio < self.performance_threshold:
                         health_status['warnings'].append(f"Performance degraded to {performance_ratio:.1%} of baseline")
                         health_status['healthy'] = False
-        
+
         return health_status
 
 
 class ProgressBar:
     """Progress bar using tqdm for non-verbose mode."""
-    
+
     def __init__(self, total_attempts: int = None, probability: float = None, time_limit: int = None, verbose: bool = False):
         self.start_time = time.time()
         self.verbose = verbose
         self.probability = probability
         self.time_limit = time_limit
-        
+
         # Calculate expected attempts based on probability (50% chance of finding)
         if probability and probability > 0:
             self.expected_attempts = int(0.693 / probability)  # ln(2) / p for 50% chance
         else:
             self.expected_attempts = total_attempts
-        
+
         # Initialize tqdm progress bar if available and not in verbose mode
         self.tqdm_bar = None
         if TQDM_AVAILABLE and not verbose:
@@ -691,7 +691,7 @@ class ProgressBar:
                     desc='Generating keys',
                     bar_format='{l_bar}{bar}| {n_fmt} [{elapsed}, {rate_fmt}]'
                 )
-    
+
     def update(self, attempts: int, rate: float = None):
         """Update the progress bar."""
         if self.tqdm_bar is not None:
@@ -708,13 +708,13 @@ class ProgressBar:
                         keys_str = f'{attempts/1000:.0f}k'
                     else:
                         keys_str = f'{attempts:,}'
-                    
+
                     # Format rate with k suffix
                     if rate >= 1000:
                         rate_str = f'{rate/1000:.2f} kkeys/s'
                     else:
                         rate_str = f'{rate:.0f}/s'
-                    
+
                     self.tqdm_bar.set_postfix_str(f'{keys_str}, {rate_str}')
                 else:
                     # Show just keys count if no rate available
@@ -724,7 +724,7 @@ class ProgressBar:
                         keys_str = f'{attempts/1000:.0f}k'
                     else:
                         keys_str = f'{attempts:,}'
-                    
+
                     self.tqdm_bar.set_postfix_str(keys_str)
             else:
                 # Key-based progress: update based on attempts
@@ -732,7 +732,7 @@ class ProgressBar:
                 if rate:
                     self.tqdm_bar.set_postfix({'rate': f'{rate:,.0f}/s'})
             self.tqdm_bar.refresh()
-    
+
     def close(self):
         """Close the progress bar."""
         if self.tqdm_bar is not None:
@@ -740,7 +740,7 @@ class ProgressBar:
                 self.tqdm_bar.close()
             except Exception:
                 pass  # Ignore errors when closing
-    
+
     def write(self, message: str):
         """Write a message without interfering with the progress bar."""
         if self.tqdm_bar is not None:
@@ -751,7 +751,7 @@ class ProgressBar:
 
 class PerformanceTracker:
     """Tracks and analyzes performance metrics over time."""
-    
+
     def __init__(self, probability: float = None, verbose: bool = False):
         self.start_time = time.time()
         self.last_update = time.time()
@@ -760,29 +760,29 @@ class PerformanceTracker:
         self.performance_samples = []
         self.max_samples = 20
         self.degradation_threshold = 0.6  # 60% performance drop triggers restart
-        
+
         # Calculate expected attempts based on probability (50% chance of finding)
         if probability and probability > 0:
             self.expected_attempts = int(0.693 / probability)  # ln(2) / p for 50% chance
         else:
             self.expected_attempts = None
-    
-    def should_update(self, attempts: int, interval_seconds: int = 5, 
+
+    def should_update(self, attempts: int, interval_seconds: int = 5,
                      interval_attempts: int = 1000000) -> bool:
         """Check if progress should be updated."""
         # Use modulo check first (cheaper than time.time())
         if attempts % interval_attempts == 0:
             return True
-        
+
         # Only check time if we haven't hit the attempt threshold
         current_time = time.time()
         return current_time - self.last_update >= interval_seconds
-    
+
     def update(self, worker_id: int, attempts: int, current_rate: float = None):
         """Update progress display."""
         elapsed = time.time() - self.start_time
         rate = attempts / elapsed if elapsed > 0 else 0
-        
+
         # Track performance samples
         if current_rate is not None:
             self.performance_samples.append({
@@ -790,60 +790,60 @@ class PerformanceTracker:
                 'rate': current_rate,
                 'attempts': attempts
             })
-            
+
             # Keep only recent samples
             if len(self.performance_samples) > self.max_samples:
                 self.performance_samples.pop(0)
-        
+
         eta = self._estimate_eta(attempts, elapsed, rate)
-        
+
         # Only print if verbose mode is enabled
         if self.verbose:
             print(f"Worker {worker_id}: {attempts:,} attempts | "
                   f"{rate:,.0f} keys/sec | {elapsed:.1f}s | ETA: {eta}")
-        
+
         self.last_update = time.time()
-    
+
     def check_performance_degradation(self) -> Tuple[bool, float]:
         """Check if performance has degraded significantly."""
         if len(self.performance_samples) < 5:
             return False, 1.0
-        
+
         # Calculate recent vs baseline performance
         recent_samples = self.performance_samples[-3:]
         baseline_samples = self.performance_samples[:-3]
-        
+
         if len(baseline_samples) < 2:
             return False, 1.0
-        
+
         recent_avg = sum(s['rate'] for s in recent_samples) / len(recent_samples)
         baseline_avg = sum(s['rate'] for s in baseline_samples) / len(baseline_samples)
-        
+
         if baseline_avg > 0:
             performance_ratio = recent_avg / baseline_avg
             return performance_ratio < self.degradation_threshold, performance_ratio
-        
+
         return False, 1.0
-    
+
     def _estimate_eta(self, attempts: int, elapsed: float, rate: float) -> str:
         """Estimate time remaining based on probability and current progress."""
         if attempts == 0 or rate == 0:
             return "Calculating..."
-        
+
         if self.expected_attempts is None:
             return "Unknown"
-        
+
         # Calculate remaining attempts (expected - current)
         remaining_attempts = max(0, self.expected_attempts - attempts)
-        
+
         # If we've exceeded expected attempts, show a more conservative estimate
         if remaining_attempts <= 0:
             # Use 90% confidence interval (2.3 / probability)
             conservative_attempts = int(2.3 / self.probability) - attempts
             remaining_attempts = max(0, conservative_attempts)
-        
+
         remaining_seconds = remaining_attempts / rate
-        
+
         if remaining_seconds < 60:
             return f"{remaining_seconds:.0f}s"
         elif remaining_seconds < 3600:
@@ -854,7 +854,7 @@ class PerformanceTracker:
 
 def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dict[str, Any]) -> BatchResult:
     """Worker process that generates keys in batches and checks in with main process.
-    
+
     Performance optimizations:
     - Single key generation per iteration (eliminates double generation)
     - Reduced shared state checking frequency (every 50K attempts)
@@ -871,11 +871,11 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
     batch_size = config.batch_size
     max_time = config.max_time
     start_time = time.time()
-    
+
     # Calculate probability for accurate ETA
     probability = calculate_pattern_probability(config)
     tracker = PerformanceTracker(probability, config.verbose)
-    
+
     # Initialize health monitor if enabled
     health_monitor = None
     if config.health_check:
@@ -886,44 +886,44 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
         except Exception as e:
             if config.verbose:
                 print(f"Worker {worker_id}: Failed to initialize health monitor: {e}")
-    
+
     total_attempts = 0
     consecutive_slow_batches = 0
     max_slow_batches = 3  # Restart after 3 consecutive slow batches
-    
+
     while True:
         batch_start_time = time.time()
         batch_attempts = 0
-        
+
         # Check if another worker found a key
         if shared_state.get('key_found', False):
             return BatchResult(worker_id=worker_id, attempts=total_attempts, batch_completed=False)
-        
+
         # Check time limit
         if max_time and (time.time() - start_time) > max_time:
             return BatchResult(worker_id=worker_id, attempts=total_attempts, batch_completed=False)
-        
+
         # Process this batch
         for attempt in range(batch_size):
             # Check if another worker found a key (check every 50K attempts to reduce overhead)
             if attempt % 50000 == 0 and attempt > 0 and shared_state.get('key_found', False):
                 return BatchResult(worker_id=worker_id, attempts=total_attempts + attempt, batch_completed=False)
-            
+
             # Check time limit (check every 50K attempts to reduce overhead)
             if attempt % 50000 == 0 and max_time and (time.time() - start_time) > max_time:
                 return BatchResult(worker_id=worker_id, attempts=total_attempts + attempt, batch_completed=False)
-            
+
             # Update progress (only in verbose mode, every 100K attempts)
             if config.verbose and attempt % 100000 == 0 and tracker.should_update(total_attempts + attempt):
                 tracker.update(worker_id, total_attempts + attempt)
-            
+
             # Generate a single key and check both main pattern and watchlist
             public_bytes, private_bytes = Ed25519KeyGenerator.generate_meshcore_keypair()
-            
+
             # Fast pattern checking using direct byte comparisons where possible
             main_pattern_match = False
             watchlist_matches = []
-            
+
             # Check for main pattern match (optimized)
             if config.mode == VanityMode.SIMPLE and config.target_first_two:
                 # Fast 2-char prefix check using direct byte comparison
@@ -932,13 +932,13 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
                     config._target_bytes = bytes.fromhex(config.target_first_two)
                 # Ensure we have exactly 2 bytes for the comparison
                 if len(config._target_bytes) == 2:
-                    main_pattern_match = (public_bytes[0] == config._target_bytes[0] and 
+                    main_pattern_match = (public_bytes[0] == config._target_bytes[0] and
                                         public_bytes[1] == config._target_bytes[1])
                 else:
                     # Fall back to hex comparison if target is not exactly 2 bytes
                     public_hex = public_bytes.hex()
                     main_pattern_match = public_hex[:2] == config.target_first_two.upper()
-                
+
                 # Check for watchlist patterns (convert to hex for watchlist checking)
                 if config.watchlist_patterns:
                     public_hex = public_bytes.hex()
@@ -947,11 +947,11 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
                 # Fall back to hex conversion for complex patterns
                 public_hex = public_bytes.hex()
                 main_pattern_match = KeyValidator.check_vanity_pattern(public_hex, config)
-                
+
                 # Check for watchlist patterns (only if we have watchlist patterns)
                 if config.watchlist_patterns:
                     watchlist_matches = KeyValidator.check_watchlist_patterns(public_hex, config)
-            
+
             # Handle watchlist matches
             if watchlist_matches:
                 public_hex = public_bytes.hex()  # Convert to hex only when needed
@@ -959,7 +959,7 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
                     print(f"Worker {worker_id}: Found WATCHLIST match! Pattern: {pattern.pattern}")
                     if pattern.description:
                         print(f"  Description: {pattern.description}")
-                    
+
                     # Create KeyInfo for watchlist key
                     watchlist_key = KeyInfo(
                         public_hex=public_hex,
@@ -970,15 +970,15 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
                         first_8_hex=public_hex[:8],
                         last_8_hex=public_hex[-8:]
                     )
-                    
+
                     # Save watchlist key
                     save_watchlist_key(watchlist_key, pattern)
-            
+
             # Handle main pattern match
             if main_pattern_match:
                 # Convert to hex only when we have a match
                 public_hex = public_bytes.hex()
-                
+
                 # Create KeyInfo for main pattern match
                 result = KeyInfo(
                     public_hex=public_hex,
@@ -989,20 +989,20 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
                     first_8_hex=public_hex[:8],
                     last_8_hex=public_hex[-8:]
                 )
-                
+
                 print(f"Worker {worker_id}: Found valid MeshCore Ed25519 key!")
                 # Set the shared state to indicate a key was found
                 shared_state['key_found'] = True
                 shared_state['found_key'] = result
                 return BatchResult(worker_id=worker_id, attempts=total_attempts + attempt + 1, found_key=result)
-            
+
             batch_attempts += 1
-        
+
         total_attempts += batch_attempts
-        
+
         # Update shared state with progress (every batch)
         shared_state['total_attempts'] = shared_state.get('total_attempts', 0) + batch_attempts
-        
+
         # Check if we've reached the target number of keys
         target_keys = shared_state.get('target_keys')
         if target_keys and shared_state['total_attempts'] >= target_keys:
@@ -1010,11 +1010,11 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
             return BatchResult(worker_id=worker_id, attempts=total_attempts, batch_completed=False)
         batch_time = time.time() - batch_start_time
         current_rate = batch_attempts / batch_time if batch_time > 0 else 0
-        
+
         # Health monitoring and performance checks (only every 10 batches to reduce overhead)
         if health_monitor and (total_attempts // batch_size) % 10 == 0:
             health_status = health_monitor.check_health(current_rate, batch_attempts, batch_time)
-            
+
             # Report health status if there are warnings or actions (only in verbose mode)
             if config.verbose and (health_status['warnings'] or health_status['actions_taken']):
                 print(f"Worker {worker_id} Health Check:")
@@ -1022,20 +1022,20 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
                     print(f"  ⚠️  {warning}")
                 for action in health_status['actions_taken']:
                     print(f"  🔧 {action}")
-                
+
                 if health_status['memory_usage'] > 0:
                     print(f"  📊 Memory: {health_status['memory_usage'] / 1024 / 1024:.1f}MB")
                 if health_status['cpu_usage'] > 0:
                     print(f"  📊 CPU: {health_status['cpu_usage']:.1f}%")
                 if health_status['performance_ratio'] < 1.0:
                     print(f"  📊 Performance: {health_status['performance_ratio']:.1%} of baseline")
-            
+
             # Check for severe performance degradation
             if not health_status['healthy']:
                 consecutive_slow_batches += 1
                 if config.verbose:
                     print(f"Worker {worker_id}: Performance degradation detected ({consecutive_slow_batches}/{max_slow_batches})")
-                
+
                 if consecutive_slow_batches >= max_slow_batches:
                     if config.verbose:
                         print(f"Worker {worker_id}: Restarting due to performance degradation")
@@ -1044,20 +1044,20 @@ def worker_process_batch(worker_id: int, config: VanityConfig, shared_state: Dic
                     return BatchResult(worker_id=worker_id, attempts=total_attempts, batch_completed=False)
             else:
                 consecutive_slow_batches = 0
-        
+
         # Update tracker with current rate for performance analysis (only when verbose)
         if config.verbose:
             tracker.update(worker_id, total_attempts, current_rate)
-        
+
         # Report batch completion (only in verbose mode)
         if config.verbose and total_attempts % 500000 == 0:
             print(f"Worker {worker_id}: Completed batch of {batch_attempts:,} keys in {batch_time:.1f}s "
                   f"({current_rate:,.0f} keys/sec) | Total: {total_attempts:,}")
-        
+
         # Check if we should continue (another worker might have found a key)
         if shared_state.get('key_found', False):
             return BatchResult(worker_id=worker_id, attempts=total_attempts, batch_completed=False)
-    
+
     return BatchResult(worker_id=worker_id, attempts=total_attempts, batch_completed=False)
 
 
@@ -1066,20 +1066,20 @@ def worker_process(worker_id: int, config: VanityConfig) -> Tuple[Optional[KeyIn
     max_iterations = config.max_iterations or 100000000
     max_time = config.max_time
     start_time = time.time()
-    
+
     # Calculate probability for accurate ETA
     probability = calculate_pattern_probability(config)
     tracker = PerformanceTracker(probability)
-    
+
     for attempt in range(max_iterations):
         # Check time limit
         if max_time and (time.time() - start_time) > max_time:
             return None, attempt
-        
+
         # Update progress
         if tracker.should_update(attempt):
             tracker.update(worker_id, attempt)
-        
+
         # Generate and check key
         result = Ed25519KeyGenerator.generate_single_key(config)
         if result:
@@ -1090,13 +1090,13 @@ def worker_process(worker_id: int, config: VanityConfig) -> Tuple[Optional[KeyIn
             else:
                 print(f"Worker {worker_id}: Generated key failed compatibility check!")
                 continue
-    
+
     return None, max_iterations
 
 
 class ArgumentParser:
     """Handles command line argument parsing and validation."""
-    
+
     @staticmethod
     def create_parser() -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
@@ -1104,10 +1104,10 @@ class ArgumentParser:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog=ArgumentParser._get_examples()
         )
-        
+
         ArgumentParser._add_arguments(parser)
         return parser
-    
+
     @staticmethod
     def _add_arguments(parser: argparse.ArgumentParser):
         """Add command line arguments."""
@@ -1144,7 +1144,7 @@ class ArgumentParser:
                           help='Disable health monitoring and do not restart workers on performance degradation.')
         parser.add_argument('--verbose', '-v', action='store_true',
                           help='Enable verbose output including per-worker progress and health monitoring details.')
-        
+
         # Test functions
         parser.add_argument('--test-compatibility', action='store_true',
                           help='Test compatibility with known MeshCore keys')
@@ -1157,15 +1157,15 @@ class ArgumentParser:
         parser.add_argument('--test-meshcore-id', nargs='?', const=1, type=float,
                           metavar='THOUSANDS',
                           help='Test MeshCore node ID format (default: 1K keys)')
-        
+
         # Output options
         parser.add_argument('--json', action='store_true',
                           help='Output keys in JSON format for MeshCore app import')
-    
+
     @staticmethod
     def _parse_keys(keys_str: str) -> int:
         """Parse keys argument.
-        
+
         Examples:
             --keys 1     -> 1,000,000 keys (1 million)
             --keys 100   -> 100,000,000 keys (100 million)
@@ -1176,14 +1176,14 @@ class ArgumentParser:
         try:
             if keys_str.lower().endswith('b'):
                 return int(float(keys_str[:-1]) * 1000000000)
-            
+
             keys = float(keys_str)
             # Always multiply by 1 million unless it ends with 'b'
             keys *= 1000000
             return int(keys)
         except ValueError:
             raise argparse.ArgumentTypeError("Invalid number format")
-    
+
     @staticmethod
     def _parse_time(time_str: str) -> int:
         """Parse time argument."""
@@ -1195,7 +1195,7 @@ class ArgumentParser:
                 return int(time_str) * 3600
         except ValueError:
             raise argparse.ArgumentTypeError("Invalid time format")
-    
+
     @staticmethod
     def _parse_batch_size(size_str: str) -> int:
         """Parse batch size argument."""
@@ -1208,7 +1208,7 @@ class ArgumentParser:
                 return int(size_str)
         except ValueError:
             raise argparse.ArgumentTypeError("Invalid batch size format")
-    
+
     @staticmethod
     def _get_examples() -> str:
         return """
@@ -1241,7 +1241,7 @@ Examples:
 
 Cosmetic Pattern Modes:
   --pattern-2: First 2 hex chars == last 2 hex chars OR palindromic
-  --pattern-4: First 4 hex chars == last 4 hex chars OR palindromic  
+  --pattern-4: First 4 hex chars == last 4 hex chars OR palindromic
   --pattern-6: First 6 hex chars == last 6 hex chars OR palindromic
   --pattern-8: First 8 hex chars == last 8 hex chars OR palindromic (default)
   --four-char: Legacy mode with 4-char vanity + optional --first-two constraint
@@ -1257,10 +1257,10 @@ Watchlist Feature:
   Use --watchlist to monitor for additional patterns while searching for your primary target.
   If no --watchlist is specified, the script automatically loads watchlist.txt if it exists.
   Watchlist keys are automatically saved when found, and the search continues.
-  
+
   Watchlist file format (one pattern per line):
     ABCD...EFGH                    # First 4 chars and last 4 chars
-    ABCD...ABCDEFGH               # First 4 chars and last 8 chars  
+    ABCD...ABCDEFGH               # First 4 chars and last 8 chars
     ABCDEFGH...ABCD               # First 8 chars and last 4 chars
     ABCD...EFGH|My cool pattern   # With optional description
     # This is a comment line
@@ -1269,43 +1269,43 @@ Watchlist Feature:
 
 class MeshCoreKeyGenerator:
     """Main key generator class."""
-    
+
     def __init__(self):
         self.start_time = None
-    
+
     def generate_vanity_key(self, config: VanityConfig) -> Optional[KeyInfo]:
         """Generate a vanity key using the specified configuration."""
         # Load watchlist patterns if specified
         if config.watchlist_file:
             config.watchlist_patterns = load_watchlist_patterns(config.watchlist_file)
-        
+
         num_workers = config.num_workers or SystemUtils.get_optimal_worker_count()
-        
-        self._print_generation_info(config, num_workers)
-        
+
+        # self._print_generation_info(config, num_workers)
+
         self.start_time = time.time()
-        
+
         try:
             return self._run_generation(config, num_workers)
         except KeyboardInterrupt:
             print("\n\nKey generation interrupted by user.")
             self.last_exit_reason = "Key generation was interrupted by user (Ctrl+C)."
             return None
-    
+
     def _print_generation_info(self, config: VanityConfig, num_workers: int):
         """Print information about the generation process."""
         print("Starting MeshCore Ed25519 key generation...")
         print(f"Mode: {config.mode.value}")
         print(f"Using {num_workers} worker processes")
         print(f"Batch size: {config.batch_size:,} keys per batch")
-        
+
         if config.max_iterations:
             print(f"Max iterations per worker: {config.max_iterations:,}")
         if config.max_time:
             print(f"Max runtime: {config.max_time/3600:.1f} hours")
-        
+
         print("-" * 60)
-    
+
     def _run_generation(self, config: VanityConfig, num_workers: int) -> Optional[KeyInfo]:
         """Run the key generation process."""
         with Manager() as manager:
@@ -1314,7 +1314,7 @@ class MeshCoreKeyGenerator:
             shared_state['found_key'] = None
             shared_state['total_attempts'] = 0
             shared_state['target_keys'] = config.max_iterations * num_workers if config.max_iterations else None
-            
+
             # Global health monitoring
             global_health_monitor = None
             if config.health_check:
@@ -1325,11 +1325,11 @@ class MeshCoreKeyGenerator:
                 except Exception as e:
                     if config.verbose:
                         print(f"Failed to initialize global health monitor: {e}")
-            
+
             worker_restart_count = 0
             max_restarts_per_worker = 5
             worker_restarts = {}
-            
+
             # Initialize progress bar for non-verbose mode
             progress_bar = None
             if not config.verbose:
@@ -1344,84 +1344,84 @@ class MeshCoreKeyGenerator:
                     # Probability-based progress bar (no specific target)
                     probability = calculate_pattern_probability(config)
                     progress_bar = ProgressBar(probability=probability, verbose=config.verbose)
-            
+
             # Progress tracking for non-verbose mode
             worker_progress = {}
             last_progress_update = time.time()
             progress_update_interval = 1  # Update progress every 1 second for more responsive updates
-            
+
             # Flag to stop progress monitoring thread
             stop_progress_monitor = threading.Event()
-            
+
             def progress_monitor():
                 """Monitor shared state and update progress bar."""
                 while not stop_progress_monitor.is_set():
                     if not config.verbose and progress_bar:
                         total_attempts = shared_state.get('total_attempts', 0)
                         elapsed = time.time() - self.start_time
-                        
+
                         # Update progress bar (always update for time-based progress)
                         rate = total_attempts / elapsed if elapsed > 0 else 0
                         progress_bar.update(total_attempts, rate)
-                        
+
                         # Check if we've reached the target number of keys
                         target_keys = shared_state.get('target_keys')
                         if target_keys and total_attempts >= target_keys:
                             shared_state['key_found'] = True  # Signal workers to stop
                             break
-                        
+
                         # Check if we've reached the time limit
                         if config.max_time and elapsed >= config.max_time:
                             shared_state['key_found'] = True  # Signal workers to stop
                             break
                     time.sleep(1.0)  # Check every 1.0 seconds for better performance
-            
+
             # Start progress monitoring thread
             progress_thread = threading.Thread(target=progress_monitor, daemon=True)
             progress_thread.start()
-            
+
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 futures = []
                 active_workers = set()
-                
+
                 # Start initial workers
                 for worker_id in range(num_workers):
                     future = executor.submit(worker_process_batch, worker_id, config, shared_state)
                     futures.append(future)
                     active_workers.add(worker_id)
-                
+
                 try:
                     while futures:
                         # Wait for any future to complete
                         done_futures, _ = concurrent.futures.wait(
-                            futures, 
+                            futures,
                             return_when=concurrent.futures.FIRST_COMPLETED
                         )
-                        
+
                         for future in done_futures:
                             futures.remove(future)
-                            
+
                             try:
                                 result = future.result()
-                                
+
                                 if result.found_key:
                                     # Cancel all remaining futures immediately
                                     for f in futures:
                                         if not f.done():
                                             f.cancel()
-                                    
+
                                     # Give a small delay for cancellation to take effect
                                     time.sleep(0.5)
-                                    
+
                                     # Stop progress monitoring and close progress bar before printing success
                                     stop_progress_monitor.set()
                                     if progress_bar:
                                         progress_bar.close()
-                                    
-                                    self._print_success(result.found_key, num_workers)
-                                    print("Note: Other workers may continue briefly - this is normal multiprocessing behavior.")
+
+                                    # self._print_success(result.found_key, num_workers)
+                                    # print("Note: Other workers may continue briefly - this is normal multiprocessing behavior.")
                                     return result.found_key
-                                
+
                                 # Check if workers stopped due to reaching target (not finding a key)
                                 if shared_state.get('key_found', False) and not result.found_key:
                                     # All workers have been signaled to stop due to reaching target
@@ -1429,12 +1429,12 @@ class MeshCoreKeyGenerator:
                                     for f in futures:
                                         if not f.done():
                                             f.cancel()
-                                    
+
                                     # Stop progress monitoring and close progress bar
                                     stop_progress_monitor.set()
                                     if progress_bar:
                                         progress_bar.close()
-                                    
+
                                     # Check if we stopped due to time limit or key target
                                     elapsed = time.time() - self.start_time
                                     if config.max_time and elapsed >= config.max_time:
@@ -1448,38 +1448,38 @@ class MeshCoreKeyGenerator:
                                                 time_str = f"{seconds}s"
                                         else:
                                             time_str = f"{config.max_time/3600:.1f} hours"
-                                        
+
                                         print(f"\nReached time limit of {time_str}.")
                                         self.last_exit_reason = f"Successfully completed time limit of {time_str} without finding a match."
                                     else:
                                         print(f"\nReached target of {shared_state.get('target_keys', 0):,} keys.")
                                         self.last_exit_reason = f"Successfully completed target of {shared_state.get('target_keys', 0):,} keys without finding a match."
                                     return None
-                                
+
                                 # Track worker progress for non-verbose mode
                                 worker_progress[result.worker_id] = result.attempts
-                                
+
                                 # Update progress bar immediately when worker completes batch
                                 if not config.verbose and progress_bar:
                                     total_attempts = sum(worker_progress.values())
                                     elapsed = time.time() - self.start_time
                                     rate = total_attempts / elapsed if elapsed > 0 else 0
                                     progress_bar.update(total_attempts, rate)
-                                
+
                                 # Check if worker needs restart (performance degradation)
                                 if not result.batch_completed and config.health_check:
                                     # Find which worker this was
                                     worker_id = result.worker_id
                                     worker_restarts[worker_id] = worker_restarts.get(worker_id, 0) + 1
-                                    
+
                                     if worker_restarts[worker_id] <= max_restarts_per_worker:
                                         if config.verbose:
                                             print(f"Restarting worker {worker_id} (restart {worker_restarts[worker_id]}/{max_restarts_per_worker})")
-                                        
+
                                         # Start a new worker to replace the failed one
                                         new_future = executor.submit(worker_process_batch, worker_id, config, shared_state)
                                         futures.append(new_future)
-                                        
+
                                         # Global health check
                                         if global_health_monitor and config.verbose:
                                             health_status = global_health_monitor.check_health(0, 0, 0)
@@ -1491,35 +1491,35 @@ class MeshCoreKeyGenerator:
                                         if config.verbose:
                                             print(f"Worker {worker_id} exceeded maximum restarts, continuing with remaining workers")
                                         active_workers.discard(worker_id)
-                                
+
                             except Exception as e:
                                 if config.verbose:
                                     print(f"Worker failed with exception: {e}")
                                 # Don't restart on exceptions, just continue with remaining workers
-                        
+
                         # Progress updates are now handled by the monitoring thread
-                        
+
                         # Check if we still have active workers
                         if not futures and not active_workers:
                             if not config.verbose:
                                 print("All workers have completed or failed.")
                             break
-                    
+
                     # Stop progress monitoring and close progress bar before printing no match message
                     stop_progress_monitor.set()
                     if progress_bar:
                         progress_bar.close()
-                    
+
                     print("\nNo match found after maximum iterations.")
                     self.last_exit_reason = "No match found after maximum iterations."
                     return None
-                    
+
                 except KeyboardInterrupt:
                     # Stop progress monitoring and close progress bar on interrupt
                     stop_progress_monitor.set()
                     if progress_bar:
                         progress_bar.close()
-                    
+
                     # Cancel all workers on interrupt
                     for f in futures:
                         if not f.done():
@@ -1530,42 +1530,42 @@ class MeshCoreKeyGenerator:
     def _print_success(self, key_info: KeyInfo, num_workers: int):
         """Print success information."""
         elapsed = time.time() - self.start_time
-        
+
         print("\n" + "="*60)
         print("SUCCESS! Found matching Ed25519 key!")
         print(f"Total time: {elapsed:.1f}s ({elapsed/60:.1f}m)")
         print("="*60)
-    
+
     def save_keys(self, key_info: KeyInfo) -> Tuple[str, str]:
         """Save keys to files and return filenames."""
         key_id = key_info.public_hex[:8].upper()
-        
+
         pub_filename = f"meshcore_{key_id}_public.txt"
         priv_filename = f"meshcore_{key_id}_private.txt"
-        
+
         with open(pub_filename, 'w') as f:
             f.write(key_info.public_hex)
-        
+
         with open(priv_filename, 'w') as f:
             f.write(key_info.private_hex)
-        
+
         return pub_filename, priv_filename
-    
+
     def save_keys_json(self, key_info: KeyInfo) -> str:
         """Save keys in JSON format for MeshCore app import."""
         import json
-        
+
         key_id = key_info.public_hex[:8].upper()
         json_filename = f"meshcore_{key_id}.json"
-        
+
         meshcore_data = {
             "public_key": key_info.public_hex,
             "private_key": key_info.private_hex
         }
-        
+
         with open(json_filename, 'w') as f:
             json.dump(meshcore_data, f, indent=2)
-        
+
         return json_filename
 
 
@@ -1574,40 +1574,40 @@ def calculate_pattern_probability(config: VanityConfig) -> float:
     if config.mode == VanityMode.SIMPLE:
         # Simple mode: first two hex chars match
         return 1.0 / 256  # 1 in 256 chance
-    
+
     elif config.mode == VanityMode.PREFIX:
         # Prefix mode: key starts with specific prefix
         prefix_length = len(config.target_prefix) if config.target_prefix else 0
         return 1.0 / (16 ** prefix_length)  # 1 in 16^length chance
-    
+
     elif config.mode == VanityMode.VANITY_2:
         # 2-char vanity: first 2 hex == last 2 hex OR palindromic
         # Each hex char has 16 possibilities, so 2 chars = 16^2 = 256
         # We need either direct match OR palindromic match
         # Probability = 2 / 256 = 1/128
         return 2.0 / 256
-    
+
     elif config.mode == VanityMode.VANITY_4:
         # 4-char vanity: first 4 hex == last 4 hex OR palindromic
         # Each hex char has 16 possibilities, so 4 chars = 16^4 = 65,536
         # We need either direct match OR palindromic match
         # Probability = 2 / 65,536 = 1/32,768
         return 2.0 / (16 ** 4)
-    
+
     elif config.mode == VanityMode.VANITY_6:
         # 6-char vanity: first 6 hex == last 6 hex OR palindromic
         # Each hex char has 16 possibilities, so 6 chars = 16^6 = 16,777,216
         # We need either direct match OR palindromic match
         # Probability = 2 / 16,777,216 = 1/8,388,608
         return 2.0 / (16 ** 6)
-    
+
     elif config.mode == VanityMode.VANITY_8:
         # 8-char vanity: first 8 hex == last 8 hex OR palindromic
         # Each hex char has 16 possibilities, so 8 chars = 16^8 = 4,294,967,296
         # We need either direct match OR palindromic match
         # Probability = 2 / 4,294,967,296 = 1/2,147,483,648
         return 2.0 / (16 ** 8)
-    
+
     elif config.mode == VanityMode.FOUR_CHAR:
         # Legacy 4-char mode with optional first-two constraint
         base_prob = 2.0 / (16 ** 4)  # 4-char vanity
@@ -1615,14 +1615,14 @@ def calculate_pattern_probability(config: VanityConfig) -> float:
             # Additional constraint: first two hex chars must match
             base_prob *= (1.0 / 256)
         return base_prob
-    
+
     elif config.mode == VanityMode.PREFIX_VANITY:
         # Prefix + 8-char vanity pattern
         prefix_length = len(config.target_prefix) if config.target_prefix else 0
         prefix_prob = 1.0 / (16 ** prefix_length)
         vanity_prob = 2.0 / (16 ** 8)  # 8-char vanity
         return prefix_prob * vanity_prob
-    
+
     else:  # DEFAULT
         # Default: 8-char vanity with optional first-two constraint
         base_prob = 2.0 / (16 ** 8)  # 8-char vanity
@@ -1649,17 +1649,17 @@ def get_system_resources() -> Dict[str, Any]:
     """Get current system resource usage."""
     if not PSUTIL_AVAILABLE:
         return {}
-    
+
     try:
         # CPU usage
         cpu_percent = psutil.cpu_percent(interval=1)
-        
+
         # Memory usage
         memory = psutil.virtual_memory()
-        
+
         # Disk usage (for temp files)
         disk = psutil.disk_usage('/')
-        
+
         return {
             'cpu_percent': cpu_percent,
             'memory_percent': memory.percent,
@@ -1693,48 +1693,48 @@ def test_meshcore_compatibility():
     print("="*60)
     print("TESTING MESHCORE COMPATIBILITY (FIXED Ed25519)")
     print("="*60)
-    
+
     # Known MeshCore keypair (if we have one to test against)
     known_public = "d86fff61471b086d87d895ed10c86e67a6cd5bfef551f6a81f33a54f9bc0c219"
     known_private = "305e0b1b3142a95882915c43cd806df904247a2d505505f73dfb0cde9e666c4d656591bb4b5a23b6f47c786bf6cccfa0c4423c4617bbc9ab51dfb6f016f84144"
-    
+
     print(f"Known public key:  {known_public}")
     print(f"Known private key: {known_private}")
-    
+
     # Test our verification function with the known key
     is_compatible = Ed25519KeyGenerator.verify_key_compatibility(known_private, known_public)
     print(f"\nKnown key compatibility test: {'✓ PASS' if is_compatible else '✗ FAIL'}")
-    
+
     if not is_compatible:
         print("The known MeshCore key doesn't verify with our method.")
-        
+
         # Analyze the key structure
         private_bytes = bytes.fromhex(known_private)
         first_half = private_bytes[:32].hex()
         second_half = private_bytes[32:].hex()
-        
+
         print(f"\nAnalyzing known key structure:")
         print(f"First 32 bytes:  {first_half}")
         print(f"Second 32 bytes: {second_half}")
-        
+
         # Check if first half is properly clamped
         first_byte = private_bytes[0]
         last_byte = private_bytes[31]
         print(f"\nClamping analysis:")
         print(f"First byte: 0x{first_byte:02x} & 248 = {first_byte & 248} (should be {first_byte})")
         print(f"Last byte:  0x{last_byte:02x} & 63 = {last_byte & 63}, | 64 = {last_byte | 64}")
-        
+
         # Test if it follows our expected clamping
-        is_clamped = ((first_byte & 248) == first_byte and 
-                     (last_byte & 63) == (last_byte & 63) and 
+        is_clamped = ((first_byte & 248) == first_byte and
+                     (last_byte & 63) == (last_byte & 63) and
                      (last_byte | 64) == last_byte)
         print(f"Is properly clamped: {is_clamped}")
-    
+
     # Test generating our own compatible keys
     print(f"\n" + "="*60)
     print("TESTING OUR FIXED Ed25519 KEY GENERATION")
     print("="*60)
-    
+
     config = VanityConfig(mode=VanityMode.SIMPLE, target_first_two="D8")
     for attempt in range(5):  # Try a few times
         result = Ed25519KeyGenerator.generate_single_key(config)
@@ -1742,38 +1742,38 @@ def test_meshcore_compatibility():
             print(f"\nGenerated key (attempt {attempt + 1}):")
             print(f"Public:  {result.public_hex}")
             print(f"Private: {result.private_hex}")
-            
+
             # Verify it works
             is_valid = Ed25519KeyGenerator.verify_key_compatibility(result.private_hex, result.public_hex)
             print(f"Verification: {'✓ PASS' if is_valid else '✗ FAIL'}")
-            
+
             if is_valid:
                 print("✓ Successfully generated compatible MeshCore Ed25519 key!")
-                
+
                 # Show the key structure
                 private_bytes = bytes.fromhex(result.private_hex)
                 clamped_scalar = private_bytes[:32]
                 sha512_prefix = private_bytes[32:]
-                
+
                 print(f"\nKey structure:")
                 print(f"Clamped scalar: {clamped_scalar.hex()}")
                 print(f"SHA512 prefix:  {sha512_prefix.hex()}")
-                
+
                 # Verify clamping
                 print(f"Clamping verification:")
                 print(f"First byte & 248: {clamped_scalar[0] & 248} (should equal {clamped_scalar[0]})")
                 print(f"Last byte & 63:   {clamped_scalar[31] & 63}")
                 print(f"Last byte | 64:   {clamped_scalar[31] | 64} (should equal {clamped_scalar[31]})")
-                
+
                 break
             else:
                 print("✗ Generated key failed verification")
         else:
             print(f"No match found in attempt {attempt + 1}")
-    
+
     else:
         print("No matching keys found in test attempts")
-    
+
     print(f"\n" + "="*60)
     print("COMPATIBILITY TEST COMPLETE")
     print("="*60)
@@ -1782,26 +1782,26 @@ def test_meshcore_compatibility():
 def test_first_two_distribution(num_samples: int = 100000):
     """Test the distribution of first two hex characters (MeshCore node IDs) in Ed25519 public keys."""
     print(f"Testing distribution of first two hex characters (MeshCore node IDs) in {num_samples:,} Ed25519 keys...")
-    
+
     distribution = {}
     for i in range(num_samples):
         result = Ed25519KeyGenerator.generate_single_key(VanityConfig(mode=VanityMode.SIMPLE))
         if result:
             first_two_hex = result.public_hex[:2].upper()
             distribution[first_two_hex] = distribution.get(first_two_hex, 0) + 1
-        
+
         # Show progress every 10% or every 100,000 keys, whichever is smaller
         progress_interval = min(100000, max(10000, num_samples // 10))
         if (i + 1) % progress_interval == 0:
             percentage = ((i + 1) / num_samples) * 100
             print(f"Progress: {i + 1:,} keys ({percentage:.1f}%)")
-    
+
     print(f"\nDistribution of first two hex characters (top 20):")
     sorted_dist = sorted(distribution.items(), key=lambda x: x[1], reverse=True)
     for i, (first_two_hex, count) in enumerate(sorted_dist[:20]):
         percentage = (count / num_samples) * 100
         print(f"{i+1:2d}. {first_two_hex}: {count:,} ({percentage:.3f}%)")
-    
+
     # Show some statistics
     total_unique = len(distribution)
     print(f"\nStatistics:")
@@ -1809,14 +1809,14 @@ def test_first_two_distribution(num_samples: int = 100000):
     print(f"Expected unique patterns: 256")
     print(f"Coverage: {total_unique/256*100:.1f}% of possible patterns")
     print(f"Expected probability per pattern: 1 in 256 = {100/256:.3f}%")
-    
+
     # Show some random patterns that were found
     import random
     found_patterns = list(distribution.keys())
     if len(found_patterns) > 10:
         sample_patterns = random.sample(found_patterns, 10)
         print(f"Sample of found patterns: {', '.join(sorted(sample_patterns))}")
-    
+
     return distribution
 
 
@@ -1824,16 +1824,16 @@ def test_entropy_and_randomness(num_samples: int = 10000):
     """Test the entropy and randomness of our Ed25519 key generation process."""
     print(f"Testing entropy and randomness of Ed25519 key generation...")
     print(f"Generating {num_samples:,} keys for analysis...")
-    
+
     # Test 1: Check for repeated keys (should be extremely rare)
     seen_keys = set()
     repeated_count = 0
-    
+
     # Test 2: Analyze byte distribution
     byte_counts = [0] * 256
     first_byte_counts = [0] * 256
     second_byte_counts = [0] * 256
-    
+
     for i in range(num_samples):
         result = Ed25519KeyGenerator.generate_single_key(VanityConfig(mode=VanityMode.SIMPLE))
         if result:
@@ -1842,7 +1842,7 @@ def test_entropy_and_randomness(num_samples: int = 10000):
             if key_hex in seen_keys:
                 repeated_count += 1
             seen_keys.add(key_hex)
-            
+
             # Count byte distributions
             for j, byte in enumerate(result.public_bytes):
                 byte_counts[byte] += 1
@@ -1850,16 +1850,16 @@ def test_entropy_and_randomness(num_samples: int = 10000):
                     first_byte_counts[byte] += 1
                 elif j == 1:
                     second_byte_counts[byte] += 1
-        
+
         if (i + 1) % 1000 == 0:
             print(f"Progress: {i + 1:,} keys analyzed...")
-    
+
     print(f"\n=== ENTROPY TEST RESULTS ===")
     print(f"Total keys generated: {num_samples:,}")
     print(f"Unique keys: {len(seen_keys):,}")
     print(f"Repeated keys: {repeated_count}")
     print(f"Collision rate: {repeated_count/num_samples*100:.6f}%")
-    
+
     # Check if we have good entropy (should be close to 0% collision rate)
     if repeated_count == 0:
         print("✓ Excellent: No key collisions detected")
@@ -1867,7 +1867,7 @@ def test_entropy_and_randomness(num_samples: int = 10000):
         print("✓ Good: Very low collision rate")
     else:
         print("⚠️  Warning: Higher than expected collision rate")
-    
+
     # Analyze first byte distribution
     print(f"\n=== FIRST BYTE DISTRIBUTION ===")
     print("Most common first bytes:")
@@ -1880,7 +1880,7 @@ def test_entropy_and_randomness(num_samples: int = 10000):
 def test_meshcore_node_id_format(num_samples: int = 1000):
     """Test MeshCore node ID format (first two hex characters)."""
     print(f"Testing MeshCore node ID format in {num_samples:,} keys...")
-    
+
     node_ids = {}
     for i in range(num_samples):
         result = Ed25519KeyGenerator.generate_single_key(VanityConfig(mode=VanityMode.SIMPLE))
@@ -1888,23 +1888,23 @@ def test_meshcore_node_id_format(num_samples: int = 1000):
             # Get the hex representation for MeshCore node ID
             node_id = result.public_hex[:2].upper()
             node_ids[node_id] = node_ids.get(node_id, 0) + 1
-        
+
         if (i + 1) % 100 == 0:
             print(f"Progress: {i + 1:,} keys analyzed...")
-    
+
     print(f"\n=== MESHCORE NODE ID TEST RESULTS ===")
     print(f"Total keys analyzed: {num_samples:,}")
     print(f"Unique node IDs found: {len(node_ids)}")
     print(f"Expected unique node IDs: 256")
     print(f"Coverage: {len(node_ids)/256*100:.1f}% of possible node IDs")
-    
+
     # Show most common node IDs
     print(f"\nMost common node IDs:")
     sorted_node_ids = sorted(node_ids.items(), key=lambda x: x[1], reverse=True)
     for i, (node_id, count) in enumerate(sorted_node_ids[:10]):
         percentage = (count / num_samples) * 100
         print(f"  {node_id}: {count:,} ({percentage:.3f}%)")
-    
+
     # Show expected probability
     print(f"\nExpected probability per node ID: 1 in 256 = {100/256:.3f}%")
 
@@ -1913,35 +1913,35 @@ def main():
     """Main entry point."""
     # Set multiprocessing method
     mp.set_start_method('spawn', force=True)
-    
+
     parser = ArgumentParser.create_parser()
     args = parser.parse_args()
-    
+
     # Handle test functions first
     if args.test_compatibility:
         test_meshcore_compatibility()
         return
-    
+
     if args.test_distribution is not None:
         num_keys_to_test = int(args.test_distribution * 1000000)
         test_first_two_distribution(num_keys_to_test)
         return
-    
+
     if args.test_entropy is not None:
         num_keys_to_test = int(args.test_entropy * 1000)
         test_entropy_and_randomness(num_keys_to_test)
         return
-    
+
     if args.test_meshcore_id is not None:
         num_keys_to_test = int(args.test_meshcore_id * 1000)
         test_meshcore_node_id_format(num_keys_to_test)
         return
-    
+
     # Validate arguments
     if args.keys and args.time:
         print("Error: Cannot specify both --keys and --time. Choose one or the other.")
         return
-    
+
     if args.keys:
         if args.keys < 1000000:
             print("Error: Minimum key count is 1 million keys.")
@@ -1949,7 +1949,7 @@ def main():
         if args.keys > 10000000000:  # 10 billion
             print("Error: Maximum key count is 10 billion keys.")
             return
-    
+
     if args.time:
         if args.time < 60:  # 1 minute minimum
             print("Error: Minimum runtime is 1 minute.")
@@ -1957,7 +1957,7 @@ def main():
         if args.time > 86400:  # 24 hours maximum
             print("Error: Maximum runtime is 24 hours.")
             return
-    
+
     if args.batch_size:
         if args.batch_size < 10000:  # 10K minimum
             print("Error: Minimum batch size is 10,000 keys.")
@@ -1965,7 +1965,7 @@ def main():
         if args.batch_size > 10000000:  # 10M maximum
             print("Error: Maximum batch size is 10 million keys.")
             return
-    
+
     if args.first_two:
         # Validate first-two argument
         if len(args.first_two) != 2:
@@ -1977,11 +1977,11 @@ def main():
         except ValueError:
             print("Error: --first-two must be a valid 2-character hex string (e.g., F8, 1A, 00)")
             return
-    
+
     if args.simple and not args.first_two:
         print("Error: --simple mode requires --first-two to be specified.")
         return
-    
+
     if args.prefix:
         # Validate prefix argument
         if len(args.prefix) < 1:
@@ -1996,7 +1996,7 @@ def main():
         except ValueError:
             print("Error: --prefix must be a valid hex string (e.g., F8A1, 1234)")
             return
-    
+
     if args.workers is not None:
         # Validate workers argument
         if args.workers < 1:
@@ -2005,22 +2005,22 @@ def main():
         if args.workers > mp.cpu_count():
             print(f"Error: --workers cannot exceed the number of available CPU cores ({mp.cpu_count()}).")
             return
-    
+
     # Check for conflicting modes (allow combining --prefix with --pattern-*)
     pattern_modes = [args.simple, args.four_char, args.pattern_8, args.pattern_4, args.pattern_2, args.pattern_6]
     pattern_mode_count = sum(pattern_modes)
-    
+
     if pattern_mode_count > 1:
         print("Error: Cannot specify multiple pattern modes. Choose one of --simple, --four-char, --pattern-8, --pattern-4, --pattern-2, or --pattern-6.")
         return
-    
-    # --prefix can be used alone or combined with pattern modes
-    
 
-    
+    # --prefix can be used alone or combined with pattern modes
+
+
+
     # Create configuration
     config = create_config_from_args(args)
-    
+
     # Show header information
     print("="*60)
     print("MESHCORE Ed25519 VANITY KEY GENERATOR")
@@ -2029,7 +2029,7 @@ def main():
     print("Format: 64-byte private key [clamped_scalar][sha512_prefix] per RFC 8032")
     print("        32-byte public key from crypto_scalarmult_ed25519_base_noclamp")
     print("="*60)
-    
+
     # Show health monitoring status
     if config.health_check:
         print("🔧 Health Monitoring: ENABLED")
@@ -2049,7 +2049,7 @@ def main():
         print("⚠️  Health Monitoring: DISABLED")
         print("   - No performance monitoring")
         print("   - No automatic worker restart")
-    
+
     # Show verbose mode status
     if config.verbose:
         print("📝 Verbose Mode: ENABLED")
@@ -2060,18 +2060,18 @@ def main():
         print("📝 Verbose Mode: DISABLED")
         print("   - Consolidated progress updates ✓")
         print("   - Clean output mode ✓")
-    
+
     # Show system status
     print_system_status()
-    
+
     # Calculate and display probability
     probability = calculate_pattern_probability(config)
     print(f"Probability of finding a key matching your pattern: {format_probability(probability)}")
-    
+
     # Generate key
     generator = MeshCoreKeyGenerator()
     key_info = generator.generate_vanity_key(config)
-    
+
     if key_info:
         # Display results
         print("\nGenerated MeshCore Ed25519 Vanity Key:")
@@ -2081,11 +2081,11 @@ def main():
         print(f"Last 8 hex:      {key_info.last_8_hex}")
         print(f"\nPublic Key (hex):\n{key_info.public_hex}")
         print(f"\nPrivate Key (hex):\n{key_info.private_hex}")
-        
+
         # Verify the key works
         is_valid = Ed25519KeyGenerator.verify_key_compatibility(key_info.private_hex, key_info.public_hex)
         print(f"\nKey Verification: {'✓ PASS' if is_valid else '✗ FAIL'}")
-        
+
         if is_valid:
             # Save keys
             if args.json:
@@ -2099,7 +2099,7 @@ def main():
                 print(f"\nKeys saved to:")
                 print(f"  Public:  {pub_file}")
                 print(f"  Private: {priv_file}")
-            
+
             node_id = key_info.public_hex[:2].upper()
             print(f"  Node ID: {node_id}")
             print("\n⚠️  Keep your private key secure and never share it!")
@@ -2122,7 +2122,7 @@ def create_config_from_args(args) -> VanityConfig:
     # Determine mode and vanity length
     mode = VanityMode.DEFAULT
     vanity_length = 8  # Default
-    
+
     if args.simple:
         mode = VanityMode.SIMPLE
     elif args.four_char:
@@ -2155,7 +2155,7 @@ def create_config_from_args(args) -> VanityConfig:
     elif args.pattern_8:
         mode = VanityMode.VANITY_8
         vanity_length = 8
-    
+
     # Handle combination of --prefix with pattern modes (overrides individual modes)
     if args.prefix and (args.pattern_2 or args.pattern_4 or args.pattern_6 or args.pattern_8):
         mode = VanityMode.PREFIX_VANITY
@@ -2168,20 +2168,20 @@ def create_config_from_args(args) -> VanityConfig:
             vanity_length = 6
         elif args.pattern_8:
             vanity_length = 8
-    
+
     # Get number of workers (use provided value or auto-detect)
     num_workers = args.workers if args.workers else None
-    
+
     # Calculate max_iterations from keys if specified
     max_iterations = None
     if args.keys:
         # Use provided workers or auto-detect for calculation
         workers_for_calc = num_workers or SystemUtils.get_optimal_worker_count()
         max_iterations = args.keys // workers_for_calc
-    
+
     # Set batch size (default 100K if not specified)
     batch_size = args.batch_size if args.batch_size else 100000
-    
+
     # Handle watchlist file
     watchlist_file = args.watchlist
     if not watchlist_file:
@@ -2192,7 +2192,7 @@ def create_config_from_args(args) -> VanityConfig:
         if os.path.exists(default_watchlist):
             watchlist_file = default_watchlist
             print(f"Auto-loading watchlist from: {default_watchlist}")
-    
+
     return VanityConfig(
         mode=mode,
         target_first_two=args.first_two,

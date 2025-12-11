@@ -801,7 +801,7 @@ async def update_repeater_channel_name():
 
                 # Update channel name
                 await bot.rest.edit_channel(int(channel_id), name=channel_name)
-                logger.info(f"Updated channel {channel_id} (category {category_id}) name to: {channel_name}")
+                # logger.info(f"Updated channel {channel_id} (category {category_id}) name to: {channel_name}")
 
             except Exception as e:
                 logger.error(f"Error updating channel for category {category_id}: {e}")
@@ -842,17 +842,18 @@ async def check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_fil
         if not matching_reservation:
             return
 
-        # Get username from reservation
+        # Get username and user_id from reservation
         username = matching_reservation.get('username', 'Unknown')
+        user_id = matching_reservation.get('user_id', None)
         public_key = node.get('public_key', '')
 
         if not public_key:
             return
 
         # Use the provided owner_file (category-specific)
-        if os.path.exists(owners_file):
+        if os.path.exists(owner_file):
             try:
-                with open(owners_file, 'r') as f:
+                with open(owner_file, 'r') as f:
                     owners_data = json.load(f)
             except (json.JSONDecodeError, Exception):
                 owners_data = {
@@ -880,7 +881,8 @@ async def check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_fil
         owner_entry = {
             "public_key": public_key,
             "name": node.get('name', 'Unknown'),
-            "username": username
+            "username": username,
+            "user_id": user_id
         }
 
         owners_data['data'].append(owner_entry)
@@ -995,13 +997,13 @@ async def check_for_new_nodes():
                 logger.error(f"Error processing category {category_id}: {e}")
                 continue
 
-        # If this is the first check, initialize known_node_keys
+        # If this is the first check, initialize known_node_keys (after processing all categories)
         if not known_node_keys:
             known_node_keys = all_current_node_keys.copy()
             logger.info(f"Initialized node watcher with {len(known_node_keys)} existing nodes across all categories")
             return
 
-        # Find new nodes
+        # Find new nodes (across all categories)
         new_node_keys = all_current_node_keys - known_node_keys
 
         if new_node_keys:
@@ -1037,7 +1039,7 @@ async def check_for_new_nodes():
                 # elif node.get('device_role') == 1:
                 #     message = f"## {emoji_new}  **NEW COMPANION ALERT**\nSay hi to **{node_name}** on West Coast Mesh {emoji_wcmesh} 927.875"
 
-        # Update known_node_keys
+        # Update known_node_keys (with all nodes from all categories)
         known_node_keys = all_current_node_keys.copy()
 
     except Exception as e:
@@ -1419,7 +1421,30 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/prefix A1`")
                 return
 
-            # Check reserved nodes file first
+            # Check nodes JSON file first (active repeaters)
+            repeaters = await get_repeater_for_context(ctx, hex_prefix, days=self.days)
+
+            # Filter out removed nodes
+            if repeaters:
+                repeaters = [r for r in repeaters if not is_node_removed(r)]
+
+            if repeaters and len(repeaters) > 0:
+                # Prefix is actively in use
+                repeater = repeaters[0]  # Get the first repeater
+                if not isinstance(repeater, dict):
+                    message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (data error)"
+                else:
+                    name = repeater.get('name', 'Unknown')
+
+                    message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
+                    message += f"Name: {name}\n"
+
+                    if len(repeaters) > 1:
+                        message += f"\n\n*Note: {len(repeaters)} repeater(s) found with this prefix. use `/stats` to see them*"
+                await ctx.respond(message)
+                return
+
+            # Check reserved nodes file
             reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
             if os.path.exists(reserved_nodes_file):
                 try:
@@ -1439,27 +1464,7 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
             if unused_keys and hex_prefix in unused_keys:
                 message = f"{CHECK} {hex_prefix} is **AVAILABLE** for use!"
             else:
-                # Get repeater information for the prefix
-                repeaters = await get_repeater_for_context(ctx, hex_prefix, days=self.days)
-
-                # Filter out removed nodes
-                if repeaters:
-                    repeaters = [r for r in repeaters if not is_node_removed(r)]
-
-                if repeaters and len(repeaters) > 0:
-                    repeater = repeaters[0]  # Get the first repeater
-                    if not isinstance(repeater, dict):
-                        message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (data error)"
-                    else:
-                        name = repeater.get('name', 'Unknown')
-
-                        message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
-                        message += f"Name: {name}\n"
-
-                        if len(repeaters) > 1:
-                            message += f"\n\n*Note: {len(repeaters)} repeater(s) found with this prefix. use `/stats` to see them*"
-                else:
-                    message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (already in use)"
+                message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (already in use)"
 
             await ctx.respond(message)
         except Exception as e:
@@ -1628,14 +1633,19 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                     f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
                 )
                 return
-            # Get username from context
+            # Get username and user_id from context
             username = ctx.user.username if ctx.user else "Unknown"
+            user_id = ctx.user.id if ctx.user else None
 
-            # Create node entry
+            # Fetch and save the user's display name (server nickname if available)
+            display_name = await get_user_display_name_from_member(ctx, user_id, username)
+
+            # Create node entry - save display name as username, and also save user_id
             node_entry = {
                 "prefix": hex_prefix,
                 "name": name,
-                "username": username,
+                "username": display_name,  # Save display name (nickname if available, otherwise username)
+                "user_id": user_id,
                 "added_at": datetime.now().isoformat()
             }
 
@@ -2028,6 +2038,28 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
             await ctx.respond("Error retrieving removed list.")
 
 
+async def get_user_display_name_from_member(ctx: lightbulb.Context, user_id: int | None, username: str) -> str:
+    """Get the Discord server display name (nickname if set, otherwise username) for a user by fetching the member"""
+    try:
+        # If we have a user_id, try to fetch the member
+        if user_id:
+            try:
+                # Get the guild from the channel
+                channel = await bot.rest.fetch_channel(ctx.channel_id)
+                if channel.guild_id:
+                    member = await bot.rest.fetch_member(channel.guild_id, user_id)
+                    # Return nickname if set, otherwise display_name, otherwise username
+                    return member.nickname or member.display_name or username
+            except Exception as e:
+                logger.debug(f"Error fetching member for user_id {user_id}: {e}")
+                # Fall back to username if member fetch fails
+
+        # Fall back to username if we can't get display name
+        return username
+    except Exception as e:
+        logger.debug(f"Error getting display name: {e}")
+        return username
+
 @client.register()
 class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
     description="Get list of reserved repeaters"):
@@ -2039,17 +2071,34 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
             lines = []
 
             reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
+
             if os.path.exists(reserved_nodes_file):
                 try:
                     with open(reserved_nodes_file, 'r') as f:
                         reserved_data = json.load(f)
+
                         for node in reserved_data.get('data', []):
-                            prefix = node.get('prefix', '').upper() if node.get('prefix') else ''
-                            name = node.get('name', 'Unknown')
-                            if prefix and name:
-                                lines.append(f"{RESERVED} {prefix}: {name}")
+                            try:
+                                prefix = node.get('prefix', '').upper() if node.get('prefix') else ''
+                                name = node.get('name', 'Unknown')
+
+                                if prefix and name:
+                                    # Use stored display name (was saved during reservation)
+                                    display_name = node.get('username', 'Unknown')
+
+                                    line = f"{RESERVED} {prefix}: {name} (reserved by {display_name})"
+                                    lines.append(line)
+                            except Exception:
+                                # Skip individual node errors
+                                continue
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error parsing reserved nodes file {reserved_nodes_file}: {e}")
+                    await ctx.respond("Error: Invalid JSON in reserved nodes file.")
+                    return
                 except Exception as e:
-                    logger.debug(f"Error reading reserved nodes file: {e}")
+                    logger.error(f"Error reading reserved nodes file {reserved_nodes_file}: {e}")
+                    await ctx.respond("Error reading reserved nodes file.")
+                    return
 
             lines.sort(key=extract_prefix_for_sort)
 

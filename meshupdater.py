@@ -9,8 +9,15 @@ from datetime import datetime
 from helpers import load_config, get_data_dir, save_data_to_json, load_data_from_json, compare_data
 
 config = load_config()
-
 logger = logging.getLogger(__name__)
+
+# Try to import cloudscraper for Cloudflare bypass, fallback to requests if not available
+try:
+    import cloudscraper
+    USE_CLOUDSCRAPER = True
+except ImportError:
+    USE_CLOUDSCRAPER = False
+    logger.warning("cloudscraper not installed. Install it with: pip install cloudscraper")
 
 
 def get_data_from_mqtt(mqtt_api_url):
@@ -24,13 +31,98 @@ def get_data_from_mqtt(mqtt_api_url):
         dict: JSON data from the API, or None if failed
     """
     try:
-        response = requests.get(mqtt_api_url)
+        # Use cloudscraper if available to bypass Cloudflare protection
+        if USE_CLOUDSCRAPER:
+            session = cloudscraper.create_scraper()
+            logger.info("Using cloudscraper to bypass Cloudflare protection")
+        else:
+            session = requests.Session()
+            logger.warning("Using standard requests (cloudscraper not available)")
+
+        # Prepare headers to mimic a real browser
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://api.letsmesh.net/",
+            "Origin": "https://api.letsmesh.net",
+        }
+
+        session.headers.update(headers)
+
+        # Make the request
+        response = session.get(mqtt_api_url, timeout=60, allow_redirects=True)
         response.raise_for_status()
+
+        # Check if response is HTML (Cloudflare challenge page)
+        content_type = response.headers.get('Content-Type', '').lower()
+        if 'text/html' in content_type or response.text.strip().startswith('<!DOCTYPE'):
+            logger.error("API returned HTML instead of JSON - likely Cloudflare challenge page")
+            logger.error(f"Response preview: {response.text[:200]}")
+            if not USE_CLOUDSCRAPER:
+                logger.error("Consider installing cloudscraper: pip install cloudscraper")
+            return None
+
         data = response.json()
         return data
     except requests.RequestException as e:
         logger.error(f"Error fetching data from MQTT API: {str(e)}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response status: {e.response.status_code}")
+            # Try to decode response, handle encoding issues
+            try:
+                response_text = e.response.text[:500]
+                logger.error(f"Response body: {response_text}")
+            except UnicodeDecodeError:
+                # Response might be binary/compressed
+                logger.error(f"Response body (raw bytes, first 200): {e.response.content[:200]}")
+                logger.error("Response appears to be binary or improperly encoded")
         return None
+    except ValueError as e:
+        # JSON decode error
+        logger.error(f"Error parsing JSON response: {str(e)}")
+        logger.error(f"Response preview: {response.text[:200] if 'response' in locals() else 'N/A'}")
+        return None
+
+def get_last_update_timestamp(data_dir):
+    """
+    Get the last update timestamp from file
+
+    Args:
+        data_dir (str): Directory where timestamp file is stored
+
+    Returns:
+        str: ISO format timestamp string, or None if file doesn't exist
+    """
+    timestamp_file = os.path.join(data_dir, "last_update_timestamp.json")
+    if os.path.exists(timestamp_file):
+        try:
+            with open(timestamp_file, 'r') as f:
+                data = json.load(f)
+                return data.get("last_timestamp")
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Error reading timestamp file: {str(e)}")
+            return None
+    return None
+
+def save_last_update_timestamp(data_dir):
+    """
+    Save the current timestamp as the last update timestamp
+
+    Args:
+        data_dir (str): Directory where timestamp file should be stored
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    timestamp_file = os.path.join(data_dir, "last_update_timestamp.json")
+    try:
+        timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+        with open(timestamp_file, 'w') as f:
+            json.dump({"last_timestamp": timestamp}, f, indent=2)
+        return True
+    except IOError as e:
+        logger.error(f"Error saving timestamp file: {str(e)}")
+        return False
 
 def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
         """Complete workflow: fetch data from API for each category section, save as new_nodes.json,
@@ -41,6 +133,13 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
         """
         data_dir = get_data_dir(data_dir)
         print("Starting node data update workflow...")
+
+        # Get last update timestamp
+        last_timestamp = get_last_update_timestamp(data_dir)
+        if last_timestamp:
+            print(f"Last update timestamp: {last_timestamp}")
+        else:
+            print("No previous timestamp found - this appears to be the first run")
 
         # Get url_base from [api] section
         try:
@@ -72,6 +171,7 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
 
         # Process each category section
         all_summaries = []
+        success_count = 0
         for category_id, section in category_sections:
             print(f"=== Processing category {category_id} ({section}) ===")
 
@@ -81,6 +181,11 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
 
             # Build the full API URL
             api_url = url_base + iata
+            # Add updated_since parameter if we have a last timestamp
+            if last_timestamp:
+                # Check if URL already has query parameters
+                separator = "&" if "?" in api_url else "?"
+                api_url = api_url + separator + f"updated_since={last_timestamp}"
             print(f"API URL: {api_url}")
 
             # Step 1: Get new data from API
@@ -91,8 +196,54 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
                 continue
 
             # Extract the actual data array if it's wrapped
-            if isinstance(new_data, dict) and "data" in new_data:
-                new_data = new_data["data"]
+            # Handle different API response formats:
+            # Format 1: {"data": {"nodes": [...]}} -> extract nodes array
+            # Format 2: {"data": [...]} -> extract data array
+            # Format 3: Already a list -> use as is
+            # Format 4: {"nodes": [...]} -> extract nodes array
+            original_data = new_data
+            original_type = type(new_data).__name__
+
+            if isinstance(new_data, list):
+                # Already a list, use as is
+                print(f"Data is already a list with {len(new_data)} items")
+                pass
+            elif isinstance(new_data, dict):
+                print(f"Data is a dict with keys: {list(new_data.keys())}")
+                if "data" in new_data:
+                    if isinstance(new_data["data"], dict) and "nodes" in new_data["data"]:
+                        # Nested format: data.nodes
+                        print("Extracting from nested format: data.nodes")
+                        new_data = new_data["data"]["nodes"]
+                    elif isinstance(new_data["data"], list):
+                        # Flat format: data is already an array
+                        print("Extracting from flat format: data")
+                        new_data = new_data["data"]
+                    else:
+                        logger.error(f"Unexpected 'data' value type: {type(new_data['data'])}")
+                        logger.error(f"Data keys: {list(new_data.keys())}")
+                        if isinstance(new_data["data"], dict):
+                            logger.error(f"Data dict keys: {list(new_data['data'].keys())}")
+                        continue
+                elif "nodes" in new_data:
+                    # Direct nodes key
+                    print("Extracting from direct nodes key")
+                    new_data = new_data["nodes"]
+                else:
+                    logger.error(f"Unexpected dict structure. Keys: {list(new_data.keys())}")
+                    logger.error(f"Sample of data structure: {str(new_data)[:500]}")
+                    continue
+            else:
+                logger.error(f"Unexpected data format. Expected list or dict, got {type(new_data)}")
+                logger.error(f"Data type: {type(new_data)}, Value preview: {str(new_data)[:200]}")
+                continue
+
+            # Ensure we have a list/array format
+            if not isinstance(new_data, list):
+                logger.error(f"After extraction, expected list but got {type(new_data)}")
+                logger.error(f"Original data type: {type(original_data)}")
+                logger.error(f"Original data keys (if dict): {list(original_data.keys()) if isinstance(original_data, dict) else 'N/A'}")
+                continue
 
             # Step 2: Save new data as new_nodes.json (temporary file)
             temp_nodes_file = f"new_{nodes_file}"
@@ -176,6 +327,14 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
             # Print summary for this category
             # print("\n" + "\n".join(category_summary))
             print(f"Update completed successfully for category {category_id}!\n")
+            success_count += 1
+
+        # Save timestamp after successful runs
+        if success_count > 0:
+            if save_last_update_timestamp(data_dir):
+                print(f"Saved update timestamp for next run")
+            else:
+                logger.warning("Failed to save update timestamp")
 
         # Save combined summary to file
         # try:

@@ -1,0 +1,12 @@
+[Unit]
+Description=MeshCore Node Updater Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/MeshBuddy
+ExecStart=/home/ubuntu/MeshBuddy/venv/bin/python /home/ubuntu/MeshBuddy/meshupdater_pnw.py
+
+[Install]
+WantedBy=multi-user.target

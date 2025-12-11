@@ -1,0 +1,10 @@
+[Unit]
+Description=MeshCore Node Updater Timer (runs every 15 minutes)
+Requires=meshupdater.service
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

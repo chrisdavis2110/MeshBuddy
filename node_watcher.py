@@ -32,10 +32,11 @@ REMOVAL_THRESHOLD_DAYS = 14  # Add nodes to removedNodes if not seen in 14+ days
 class NodeWatcher:
     """Watches nodes.json for changes and manages reserved/removed nodes for a specific category"""
 
-    def __init__(self, nodes_file: str, reserved_nodes_file: str, removed_nodes_file: str, category_id: Optional[int] = None):
+    def __init__(self, nodes_file: str, reserved_nodes_file: str, removed_nodes_file: str, category_id: Optional[int] = None, owners_file: Optional[str] = None):
         self.nodes_file = nodes_file
         self.reserved_nodes_file = reserved_nodes_file
         self.removed_nodes_file = removed_nodes_file
+        self.owners_file = owners_file or "repeaterOwners.json"
         self.category_id = category_id
         self.known_node_keys: Set[str] = set()
         self.known_nodes_map: Dict[str, Dict] = {}  # Store full node data for missing node tracking
@@ -282,8 +283,69 @@ class NodeWatcher:
             logger.debug(f"Error parsing last_seen timestamp '{last_seen_str}': {e}")
             return False
 
+    def _add_owner_to_repeater_owners(self, node: Dict, reserved_node: Dict):
+        """Add owner information to repeaterOwners file before removing from reservedNodes"""
+        try:
+            username = reserved_node.get('username', 'Unknown')
+            user_id = reserved_node.get('user_id', None)
+            public_key = node.get('public_key', '')
+
+            if not public_key:
+                return False
+
+            # Load or create owners file
+            if os.path.exists(self.owners_file):
+                try:
+                    with open(self.owners_file, 'r') as f:
+                        owners_data = json.load(f)
+                except (json.JSONDecodeError, Exception):
+                    owners_data = {
+                        "timestamp": datetime.now().isoformat(),
+                        "data": []
+                    }
+            else:
+                owners_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "data": []
+                }
+
+            # Check if this public_key already exists
+            existing_owner = None
+            for owner in owners_data.get('data', []):
+                if owner.get('public_key', '').upper() == public_key.upper():
+                    existing_owner = owner
+                    break
+
+            if existing_owner:
+                # Already exists, skip
+                return False
+
+            # Add new owner entry
+            owner_entry = {
+                "public_key": public_key,
+                "name": node.get('name', 'Unknown'),
+                "username": username,
+                "user_id": user_id
+            }
+
+            owners_data['data'].append(owner_entry)
+            owners_data['timestamp'] = datetime.now().isoformat()
+
+            # Save to file
+            with open(self.owners_file, 'w') as f:
+                json.dump(owners_data, f, indent=2)
+
+            category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+            logger.info(f"{category_prefix}Added repeater owner: {username} (public_key: {public_key[:10]}...) to {self.owners_file}")
+            return True
+
+        except Exception as e:
+            category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+            logger.error(f"{category_prefix}Error adding owner to repeaterOwners: {e}")
+            return False
+
     def check_new_repeaters_for_reserved(self, nodes_data: Dict):
-        """Check if new repeaters match reserved nodes and remove from reserved list"""
+        """Check if new repeaters match reserved nodes, transfer owner to repeaterOwners, then remove from reserved list"""
         nodes_list = nodes_data.get('data', [])
         current_node_keys = set()
         current_nodes_map = {}
@@ -323,7 +385,7 @@ class NodeWatcher:
             return
 
         # Check all current repeaters against reserved nodes
-        # Match by: public_key prefix (first 2 chars) AND name must match
+        # Match by: public_key prefix (first 2 chars) AND node name contains reserved name (case-insensitive)
         updated_reserved_list = []
         removed_any = False
 
@@ -333,19 +395,31 @@ class NodeWatcher:
 
             # Check if any current repeater matches this reserved node
             matched = False
+            matched_node = None
+            matched_public_key = None
+
             for public_key, node in current_nodes_map.items():
                 node_prefix = public_key.upper()[:2] if len(public_key) >= 2 else ''
                 node_name = node.get('name', '').strip()
 
-                # Match if both prefix and name are the same
-                if node_prefix == reserved_prefix and node_name == reserved_name and node.get('device_role') == 2:
-                    category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
-                    logger.info(f"{category_prefix}Repeater with public_key {public_key[:2].upper()} and name '{node_name}' matches reserved entry - removing from reserved list")
-                    removed_any = True
+                # Match if prefix matches and node name contains reserved name (case-insensitive)
+                if (node_prefix == reserved_prefix and
+                    reserved_name.lower() in node_name.lower() and
+                    node.get('device_role') == 2):
+                    matched_node = node
+                    matched_public_key = public_key
                     matched = True
                     break
 
-            if not matched:
+            if matched and matched_node:
+                # First, transfer owner to repeaterOwners file
+                self._add_owner_to_repeater_owners(matched_node, reserved_node)
+
+                # Then remove from reserved list
+                category_prefix = f"[Category {self.category_id}] " if self.category_id else ""
+                logger.info(f"{category_prefix}Repeater with public_key {matched_public_key[:2].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - removing from reserved list")
+                removed_any = True
+            else:
                 # Keep this reserved node in the list
                 updated_reserved_list.append(reserved_node)
 
@@ -613,9 +687,10 @@ def main():
         nodes_file = config.get(section, "nodes_file")
         removed_nodes_file = config.get(section, "removed_nodes_file")
         reserved_nodes_file = config.get(section, "reserved_nodes_file")
+        owners_file = config.get(section, "owners_file", fallback="repeaterOwners.json")
 
         logger.info(f"Creating watcher for category {category_id}: {nodes_file}")
-        watcher = NodeWatcher(nodes_file, reserved_nodes_file, removed_nodes_file, category_id)
+        watcher = NodeWatcher(nodes_file, reserved_nodes_file, removed_nodes_file, category_id, owners_file)
         watchers.append(watcher)
 
     if args.watch:
