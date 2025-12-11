@@ -1,11 +1,12 @@
 __pycache__/
 venv/
 config.ini
-nodes.json
-updated.json
-reservedNodes.json
-removedNodes.json
+nodes*.json
+updated*.json
+reservedNodes*.json
+removedNodes*.json
 update_summary.txt
-repeaterOwners.json
+repeaterOwners*.json
 placeholder.txt
 .DS_Store
+last_update*

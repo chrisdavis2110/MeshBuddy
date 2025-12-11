@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 config = load_config("config.ini")
 
-bot = hikari.GatewayBot(config.get("discord", "token"))
+bot = hikari.GatewayBot(config.get("discord", "devtoken"))
 client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
 
@@ -48,7 +48,7 @@ async def initialize_emojis(channel_id: int = None):
     try:
         # Get channel ID from config if not provided
         if channel_id is None:
-            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
+            channel_id = config.get("discord", "devmessenger_channel_id", fallback=None)
 
         if not channel_id:
             logger.warning("No channel_id available to initialize emojis")
@@ -451,7 +451,7 @@ async def update_repeater_channel_name():
     """Update Discord channel name with device counts"""
     try:
         # Get channel ID from config (you'll need to add this to config.ini)
-        channel_id = config.get("discord", "repeater_channel_id", fallback=None)
+        channel_id = config.get("discord", "devrepeater_channel_id", fallback=None)
         if not channel_id:
             logger.warning("No channel_id specified in config.ini - skipping channel name update")
             return
@@ -559,8 +559,9 @@ async def check_reserved_repeater_and_add_owner(node, prefix):
         if not matching_reservation:
             return
 
-        # Get username from reservation
+        # Get username and user_id from reservation
         username = matching_reservation.get('username', 'Unknown')
+        user_id = matching_reservation.get('user_id', None)
         public_key = node.get('public_key', '')
 
         if not public_key:
@@ -598,7 +599,8 @@ async def check_reserved_repeater_and_add_owner(node, prefix):
         owner_entry = {
             "public_key": public_key,
             "name": node.get('name', 'Unknown'),
-            "username": username
+            "username": username,
+            "user_id": user_id
         }
 
         owners_data['data'].append(owner_entry)
@@ -690,7 +692,7 @@ async def check_for_new_nodes():
             logger.info(f"Found {len(new_node_keys)} new node(s)")
 
             # Get channel ID from config
-            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
+            channel_id = config.get("discord", "devmessenger_channel_id", fallback=None)
             if not channel_id:
                 logger.warning("No messenger_channel_id specified in config.ini - skipping new node notification")
             else:
@@ -1315,14 +1317,19 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                     f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
                 )
                 return
-            # Get username from context
+            # Get username and user_id from context
             username = ctx.user.username if ctx.user else "Unknown"
+            user_id = ctx.user.id if ctx.user else None
 
-            # Create node entry
+            # Fetch and save the user's display name (server nickname if available)
+            display_name = await get_user_display_name_from_member(ctx, user_id, username)
+
+            # Create node entry - save display name as username, and also save user_id
             node_entry = {
                 "prefix": hex_prefix,
                 "name": name,
-                "username": username,
+                "username": display_name,  # Save display name (nickname if available, otherwise username)
+                "user_id": user_id,
                 "added_at": datetime.now().isoformat()
             }
 
@@ -1729,13 +1736,29 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                 try:
                     with open("reservedNodes.json", 'r') as f:
                         reserved_data = json.load(f)
+
                         for node in reserved_data.get('data', []):
-                            prefix = node.get('prefix', '').upper() if node.get('prefix') else ''
-                            name = node.get('name', 'Unknown')
-                            if prefix and name:
-                                lines.append(f"{RESERVED} {prefix}: {name}")
+                            try:
+                                prefix = node.get('prefix', '').upper() if node.get('prefix') else ''
+                                name = node.get('name', 'Unknown')
+
+                                if prefix and name:
+                                    # Use stored display name (was saved during reservation)
+                                    display_name = node.get('username', 'Unknown')
+
+                                    line = f"{RESERVED} {prefix}: {name} (reserved by {display_name})"
+                                    lines.append(line)
+                            except Exception:
+                                # Skip individual node errors
+                                continue
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error parsing reserved nodes file reservedNodes.json: {e}")
+                    await ctx.respond("Error: Invalid JSON in reserved nodes file.")
+                    return
                 except Exception as e:
-                    logger.debug(f"Error reading reservedNodes.json: {e}")
+                    logger.error(f"Error reading reserved nodes file reservedNodes.json: {e}")
+                    await ctx.respond("Error reading reserved nodes file.")
+                    return
 
             lines.sort(key=extract_prefix_for_sort)
 
@@ -1851,6 +1874,28 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
         except Exception as e:
             logger.error(f"Error in help command: {e}")
             await ctx.respond("Error retrieving help information.")
+
+async def get_user_display_name_from_member(ctx: lightbulb.Context, user_id: int | None, username: str) -> str:
+    """Get the Discord server display name (nickname if set, otherwise username) for a user by fetching the member"""
+    try:
+        # If we have a user_id, try to fetch the member
+        if user_id:
+            try:
+                # Get the guild from the channel
+                channel = await bot.rest.fetch_channel(ctx.channel_id)
+                if channel.guild_id:
+                    member = await bot.rest.fetch_member(channel.guild_id, user_id)
+                    # Return nickname if set, otherwise display_name, otherwise username
+                    return member.nickname or member.display_name or username
+            except Exception as e:
+                logger.debug(f"Error fetching member for user_id {user_id}: {e}")
+                # Fall back to username if member fetch fails
+
+        # Fall back to username if we can't get display name
+        return username
+    except Exception as e:
+        logger.debug(f"Error getting display name: {e}")
+        return username
 
 if __name__ == "__main__":
     bot.run()
