@@ -6,7 +6,7 @@ After=network.target
 Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/MeshBuddy
-ExecStart=/home/ubuntu/MeshBuddy/venv/bin/python /home/ubuntu/MeshBuddy/meshupdater_pnw.py
+ExecStart=/home/ubuntu/MeshBuddy/venv/bin/python /home/ubuntu/MeshBuddy/meshupdater.py
 
 [Install]
 WantedBy=multi-user.target
