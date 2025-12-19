@@ -35,6 +35,7 @@ WARN = "⚠️"
 RESERVED = "⏳"
 pending_remove_selections = {}
 pending_qr_selections = {}  # Track pending QR code selections
+pending_own_selections = {}  # Track pending own/claim selections
 known_node_keys = set()  # Track known node public_keys
 
 # Cache for server emojis
@@ -559,8 +560,9 @@ async def check_reserved_repeater_and_add_owner(node, prefix):
         if not matching_reservation:
             return
 
-        # Get username and user_id from reservation
+        # Get username, display_name, and user_id from reservation
         username = matching_reservation.get('username', 'Unknown')
+        display_name = matching_reservation.get('display_name', username)  # Fallback to username if display_name not present
         user_id = matching_reservation.get('user_id', None)
         public_key = node.get('public_key', '')
 
@@ -600,6 +602,7 @@ async def check_reserved_repeater_and_add_owner(node, prefix):
             "public_key": public_key,
             "name": node.get('name', 'Unknown'),
             "username": username,
+            "display_name": display_name,
             "user_id": user_id
         }
 
@@ -1324,11 +1327,12 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
             # Fetch and save the user's display name (server nickname if available)
             display_name = await get_user_display_name_from_member(ctx, user_id, username)
 
-            # Create node entry - save display name as username, and also save user_id
+            # Create node entry - save both username and display_name separately, and also save user_id
             node_entry = {
                 "prefix": hex_prefix,
                 "name": name,
-                "username": display_name,  # Save display name (nickname if available, otherwise username)
+                "username": username,  # Actual Discord username
+                "display_name": display_name,  # Display name (nickname if available, otherwise username)
                 "user_id": user_id,
                 "added_at": datetime.now().isoformat()
             }
@@ -1527,6 +1531,258 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
             await ctx.respond(f"{CROSS} Error removing repeater: {str(e)}")
 
 
+async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
+    """Process the ownership claim of a repeater and add to repeaterOwners.json"""
+    try:
+        username = ctx_or_interaction.user.username if ctx_or_interaction.user else "Unknown"
+        user_id = ctx_or_interaction.user.id if ctx_or_interaction.user else None
+
+        # Get display name (nickname if available)
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            display_name = await get_user_display_name_from_member(ctx_or_interaction, user_id, username)
+        elif isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            try:
+                channel = await bot.rest.fetch_channel(ctx_or_interaction.channel_id)
+                if channel.guild_id and user_id:
+                    member = await bot.rest.fetch_member(channel.guild_id, user_id)
+                    display_name = member.nickname or member.display_name or username
+                else:
+                    display_name = username
+            except Exception:
+                display_name = username
+        else:
+            display_name = username
+
+        public_key = selected_repeater.get('public_key', '')
+        if not public_key:
+            error_msg = f"{CROSS} Error: Repeater has no public key"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_msg,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(error_msg, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Load or create owner file
+        owners_file = "repeaterOwners.json"
+        if os.path.exists(owners_file):
+            try:
+                with open(owners_file, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        owners_data = json.loads(content)
+                    else:
+                        owners_data = {
+                            "timestamp": datetime.now().isoformat(),
+                            "data": []
+                        }
+            except json.JSONDecodeError:
+                owners_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "data": []
+                }
+        else:
+            owners_data = {
+                "timestamp": datetime.now().isoformat(),
+                "data": []
+            }
+
+        # Check if this public_key already exists
+        existing_owner = None
+        for owner in owners_data.get('data', []):
+            if owner.get('public_key', '').upper() == public_key.upper():
+                existing_owner = owner
+                break
+
+        prefix = public_key[:2].upper() if public_key else '??'
+        name = selected_repeater.get('name', 'Unknown')
+
+        if existing_owner:
+            # Already claimed - show who owns it
+            existing_username = existing_owner.get('username', 'Unknown')
+            existing_display_name = existing_owner.get('display_name', None)
+            if existing_display_name and existing_display_name != existing_username:
+                message = f"{WARN} Repeater {prefix}: {name} is already claimed by **{existing_display_name}**"
+            else:
+                message = f"{WARN} Repeater {prefix}: {name} is already claimed by **{existing_username}**"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    message,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Add new owner entry
+        owner_entry = {
+            "public_key": public_key,
+            "name": name,
+            "username": username,  # Actual Discord username
+            "display_name": display_name,  # Server nickname or display name
+            "user_id": user_id
+        }
+
+        owners_data['data'].append(owner_entry)
+        owners_data['timestamp'] = datetime.now().isoformat()
+
+        # Save to file
+        with open(owners_file, 'w') as f:
+            json.dump(owners_data, f, indent=2)
+
+        message = f"{CHECK} Successfully claimed repeater {prefix}: **{name}**"
+
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
+                message,
+                components=None,
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        else:
+            await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
+    except Exception as e:
+        logger.error(f"Error processing repeater ownership: {e}")
+        error_message = f"{CROSS} Error claiming repeater: {str(e)}"
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
+                error_message,
+                components=None,
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        else:
+            await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
+class OwnRepeaterCommand(lightbulb.SlashCommand, name="own",
+    description="Claim ownership of a repeater"):
+
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Claim ownership of a repeater"""
+        try:
+            hex_prefix = self.text.upper().strip()
+
+            # Validate hex format
+            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Load nodes.json
+            nodes_file = "nodes.json"
+            if not os.path.exists(nodes_file):
+                await ctx.respond("Error: nodes.json not found", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            with open(nodes_file, 'r') as f:
+                nodes_data = json.load(f)
+
+            # Find all repeaters with matching prefix (device_role == 2)
+            nodes_list = nodes_data.get('data', [])
+            matching_repeaters = []
+
+            for node in nodes_list:
+                # Normalize field names
+                normalize_node(node)
+                node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
+                # Only consider repeaters (device_role == 2)
+                if node_prefix == hex_prefix and node.get('device_role') == 2:
+                    # Check if already removed
+                    if not is_node_removed(node):
+                        matching_repeaters.append(node)
+
+            if not matching_repeaters:
+                await ctx.respond(f"{CROSS} No repeater found with hex prefix {hex_prefix}", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # If multiple repeaters found, show select menu
+            if len(matching_repeaters) > 1:
+                # Create select menu options
+                options = []
+                for i, repeater in enumerate(matching_repeaters):
+                    name = repeater.get('name', 'Unknown')
+                    last_seen = repeater.get('last_seen', 'Unknown')
+
+                    # Format last_seen for display
+                    formatted_last_seen = "Unknown"
+                    if last_seen != 'Unknown':
+                        try:
+                            last_seen_dt = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
+                            days_ago = (datetime.now(last_seen_dt.tzinfo) - last_seen_dt).days
+                            formatted_last_seen = f"{days_ago} days ago"
+                        except Exception:
+                            formatted_last_seen = "Invalid timestamp"
+
+                    # Create option label (Discord limit: 100 chars)
+                    label = f"{name[:50]}"  # Truncate name if too long
+                    description = f"Last seen: {formatted_last_seen}"[:100]
+
+                    # Use index as value
+                    options.append(
+                        hikari.SelectMenuOption(
+                            label=label,
+                            description=description,
+                            value=str(i),
+                            emoji=EMOJIS[i],
+                            is_default=False
+                        )
+                    )
+
+                # Create custom ID for this selection
+                custom_id = f"own_select_{hex_prefix}_{ctx.interaction.id}"
+
+                # Store the matching repeaters for later retrieval
+                pending_own_selections[custom_id] = matching_repeaters
+
+                # Create select menu using hikari's builder
+                action_row_builder = hikari.impl.MessageActionRowBuilder()
+
+                # add_text_menu returns a TextSelectMenuBuilder
+                select_menu_builder = action_row_builder.add_text_menu(
+                    custom_id,  # custom_id must be positional
+                    placeholder="Select a repeater to claim",
+                    min_values=1,
+                    max_values=1
+                )
+
+                for option in options:
+                    select_menu_builder.add_option(
+                        option.label,  # label must be positional
+                        option.value,  # value must be positional
+                        description=option.description,
+                        emoji=option.emoji,
+                        is_default=option.is_default
+                    )
+
+                await ctx.respond(
+                    f"Found {len(matching_repeaters)} repeater(s) with prefix {hex_prefix}. Please select one:",
+                    components=[action_row_builder],
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+
+                # Return early - the component listener will handle the selection
+                return
+            else:
+                # Only one repeater found, use it directly
+                selected_repeater = matching_repeaters[0]
+
+            # Process the ownership claim (for single repeater case)
+            await process_repeater_ownership(selected_repeater, ctx)
+        except Exception as e:
+            logger.error(f"Error in own command: {e}")
+            await ctx.respond(f"{CROSS} Error claiming repeater: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
 @bot.listen()
 async def on_component_interaction(event: hikari.InteractionCreateEvent):
     """Handle component interactions (select menus) for remove command"""
@@ -1580,6 +1836,30 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                     hikari.ResponseType.MESSAGE_UPDATE,
                     f"{CROSS} No selection made",
                     components=None
+                )
+
+    # Check if this is an own/claim selection
+    elif custom_id and custom_id.startswith("own_select_"):
+        # Extract the custom_id to get the matching repeaters
+        if custom_id in pending_own_selections:
+            matching_repeaters = pending_own_selections[custom_id]
+
+            # Get the selected index
+            if interaction.values and len(interaction.values) > 0:
+                selected_index = int(interaction.values[0])
+                selected_repeater = matching_repeaters[selected_index]
+
+                # Process the ownership claim
+                await process_repeater_ownership(selected_repeater, interaction)
+
+                # Clean up the stored selection
+                del pending_own_selections[custom_id]
+            else:
+                await interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    f"{CROSS} No selection made",
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
                 )
 
 
@@ -1743,10 +2023,13 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                                 name = node.get('name', 'Unknown')
 
                                 if prefix and name:
-                                    # Use stored display name (was saved during reservation)
-                                    display_name = node.get('username', 'Unknown')
-
-                                    line = f"{RESERVED} {prefix}: {name} (reserved by {display_name})"
+                                    # Use stored display_name if available, otherwise username
+                                    username = node.get('username', 'Unknown')
+                                    display_name = node.get('display_name', None)
+                                    if display_name and display_name != username:
+                                        line = f"{RESERVED} {prefix}: {name} (reserved by {display_name})"
+                                    else:
+                                        line = f"{RESERVED} {prefix}: {name} (reserved by {username})"
                                     lines.append(line)
                             except Exception:
                                 # Skip individual node errors
@@ -1865,6 +2148,7 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/reserve <prefix> <name>` - Reserve a hex prefix for a repeater
 `/release <prefix>` - Release a hex prefix from the reserve list
 `/remove <hex>` - Remove a repeater from the repeater list
+`/own <hex>` - Claim ownership of a repeater
 `/keygen <prefix>` - Generate a MeshCore keypair with a specific prefix
 `/help` - Show this help message
 

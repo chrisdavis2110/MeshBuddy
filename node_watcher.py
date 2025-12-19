@@ -1,7 +1,7 @@
 #!/usr/bin/python
 """
 Node watcher that monitors nodes.json and automatically:
-1. Removes reserved nodes when a repeater with the same hex prefix is detected
+1. Moves reserved nodes to offReserved.json when a repeater with the same hex prefix is detected
 2. Removes nodes from removedNodes.json if they've advertised recently
 3. Adds repeaters to removedNodes.json if they haven't been seen in over 14 days
 """
@@ -37,6 +37,7 @@ class NodeWatcher:
         self.reserved_nodes_file = reserved_nodes_file
         self.removed_nodes_file = removed_nodes_file
         self.owners_file = owners_file or "repeaterOwners.json"
+        self.off_reserved_nodes_file = "offReserved.json"
         self.known_node_keys: Set[str] = set()
         self.known_nodes_map: Dict[str, Dict] = {}  # Store full node data for missing node tracking
         self.last_file_mtime = 0
@@ -182,6 +183,90 @@ class NodeWatcher:
         except Exception as e:
             logger.error(f"Error saving {self.reserved_nodes_file}: {e}")
 
+    def load_off_reserved_nodes(self) -> Optional[Dict]:
+        """Load offReserved.json and return the data"""
+        # Retry logic to handle race conditions when file is being written
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                if not os.path.exists(self.off_reserved_nodes_file):
+                    logger.debug(f"{self.off_reserved_nodes_file} not found")
+                    return {
+                        "timestamp": datetime.now().isoformat(),
+                        "data": []
+                    }
+
+                # Check if file is empty before trying to parse
+                if os.path.getsize(self.off_reserved_nodes_file) == 0:
+                    if attempt < max_retries - 1:
+                        logger.debug(f"{self.off_reserved_nodes_file} is empty, retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.debug(f"{self.off_reserved_nodes_file} is empty after {max_retries} attempts")
+                        return {
+                            "timestamp": datetime.now().isoformat(),
+                            "data": []
+                        }
+
+                with open(self.off_reserved_nodes_file, 'r') as f:
+                    content = f.read().strip()
+                    if not content:
+                        if attempt < max_retries - 1:
+                            logger.debug(f"{self.off_reserved_nodes_file} appears empty, retrying in {retry_delay}s...")
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            logger.debug(f"{self.off_reserved_nodes_file} is empty after {max_retries} attempts")
+                            return {
+                                "timestamp": datetime.now().isoformat(),
+                                "data": []
+                            }
+
+                    # Parse JSON from content string
+                    return json.loads(content)
+
+            except json.JSONDecodeError as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"Error parsing {self.off_reserved_nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error(f"Error parsing {self.off_reserved_nodes_file}: {e}")
+                    return {
+                        "timestamp": datetime.now().isoformat(),
+                        "data": []
+                    }
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"Error loading {self.off_reserved_nodes_file} (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s: {e}")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error(f"Error loading {self.off_reserved_nodes_file}: {e}")
+                    return {
+                        "timestamp": datetime.now().isoformat(),
+                        "data": []
+                    }
+
+        # Fallback (should never reach here)
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "data": []
+        }
+
+    def save_off_reserved_nodes(self, data: Dict):
+        """Save offReserved.json"""
+        try:
+            data["timestamp"] = datetime.now().isoformat()
+            with open(self.off_reserved_nodes_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.info(f"Updated {self.off_reserved_nodes_file}")
+        except Exception as e:
+            logger.error(f"Error saving {self.off_reserved_nodes_file}: {e}")
+
     def load_removed_nodes(self) -> Optional[Dict]:
         """Load removedNodes.json and return the data"""
         # Retry logic to handle race conditions when file is being written
@@ -286,6 +371,7 @@ class NodeWatcher:
         """Add owner information to repeaterOwners file before removing from reservedNodes"""
         try:
             username = reserved_node.get('username', 'Unknown')
+            display_name = reserved_node.get('display_name', username)  # Fallback to username if display_name not present
             user_id = reserved_node.get('user_id', None)
             public_key = node.get('public_key', '')
 
@@ -324,6 +410,7 @@ class NodeWatcher:
                 "public_key": public_key,
                 "name": node.get('name', 'Unknown'),
                 "username": username,
+                "display_name": display_name,
                 "user_id": user_id
             }
 
@@ -342,7 +429,7 @@ class NodeWatcher:
             return False
 
     def check_new_repeaters_for_reserved(self, nodes_data: Dict):
-        """Check if new repeaters match reserved nodes and remove from reserved list"""
+        """Check if new repeaters match reserved nodes, transfer owner to repeaterOwners, then move to offReserved list"""
         nodes_list = nodes_data.get('data', [])
         current_node_keys = set()
         current_nodes_map = {}
@@ -385,6 +472,17 @@ class NodeWatcher:
         updated_reserved_list = []
         removed_any = False
 
+        # Load offReserved nodes file
+        off_reserved_data = self.load_off_reserved_nodes()
+        if not off_reserved_data:
+            off_reserved_data = {
+                "timestamp": datetime.now().isoformat(),
+                "data": []
+            }
+        off_reserved_list = off_reserved_data.get('data', [])
+        # Track existing offReserved nodes to avoid duplicates
+        off_reserved_prefixes = {node.get('prefix', '').upper() for node in off_reserved_list if node.get('prefix')}
+
         for reserved_node in reserved_list:
             reserved_prefix = reserved_node.get('prefix', '').upper()
             reserved_name = reserved_node.get('name', '').strip()
@@ -411,8 +509,13 @@ class NodeWatcher:
                 # First, transfer owner to repeaterOwners file
                 self._add_owner_to_repeater_owners(matched_node, reserved_node)
 
-                # Then remove from reserved list
-                logger.info(f"Repeater with public_key {matched_public_key[:2].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - removing from reserved list")
+                # Then add to offReserved list instead of just removing
+                if reserved_prefix not in off_reserved_prefixes:
+                    off_reserved_list.append(reserved_node)
+                    off_reserved_prefixes.add(reserved_prefix)
+                    logger.info(f"Repeater with public_key {matched_public_key[:2].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - moving to offReserved list")
+                else:
+                    logger.info(f"Repeater with public_key {matched_public_key[:2].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - already in offReserved list")
                 removed_any = True
             else:
                 # Keep this reserved node in the list
@@ -421,6 +524,9 @@ class NodeWatcher:
         if removed_any:
             reserved_data['data'] = updated_reserved_list
             self.save_reserved_nodes(reserved_data)
+            # Save offReserved nodes file
+            off_reserved_data['data'] = off_reserved_list
+            self.save_off_reserved_nodes(off_reserved_data)
 
         # Update known_node_keys and known_nodes_map
         self.known_node_keys = current_node_keys.copy()
