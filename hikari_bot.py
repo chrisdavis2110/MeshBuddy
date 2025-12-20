@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 config = load_config("config.ini")
 
-bot = hikari.GatewayBot(config.get("discord", "devtoken"))
+bot = hikari.GatewayBot(config.get("discord", "token"))
 client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
 
@@ -49,7 +49,7 @@ async def initialize_emojis(channel_id: int = None):
     try:
         # Get channel ID from config if not provided
         if channel_id is None:
-            channel_id = config.get("discord", "devmessenger_channel_id", fallback=None)
+            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
 
         if not channel_id:
             logger.warning("No channel_id available to initialize emojis")
@@ -452,7 +452,7 @@ async def update_repeater_channel_name():
     """Update Discord channel name with device counts"""
     try:
         # Get channel ID from config (you'll need to add this to config.ini)
-        channel_id = config.get("discord", "devrepeater_channel_id", fallback=None)
+        channel_id = config.get("discord", "repeater_channel_id", fallback=None)
         if not channel_id:
             logger.warning("No channel_id specified in config.ini - skipping channel name update")
             return
@@ -695,7 +695,7 @@ async def check_for_new_nodes():
             logger.info(f"Found {len(new_node_keys)} new node(s)")
 
             # Get channel ID from config
-            channel_id = config.get("discord", "devmessenger_channel_id", fallback=None)
+            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
             if not channel_id:
                 logger.warning("No messenger_channel_id specified in config.ini - skipping new node notification")
             else:
