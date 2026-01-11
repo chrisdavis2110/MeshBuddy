@@ -4,8 +4,9 @@ import os
 import json
 import shutil
 import logging
+import argparse
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from helpers import load_config, get_data_dir, save_data_to_json, load_data_from_json, compare_data
 
 config = load_config()
@@ -106,7 +107,7 @@ def get_last_update_timestamp(data_dir):
 
 def save_last_update_timestamp(data_dir):
     """
-    Save the current timestamp as the last update timestamp
+    Save the current timestamp as the last update timestamp.
 
     Args:
         data_dir (str): Directory where timestamp file should be stored
@@ -116,7 +117,7 @@ def save_last_update_timestamp(data_dir):
     """
     timestamp_file = os.path.join(data_dir, "last_update_timestamp.json")
     try:
-        timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         with open(timestamp_file, 'w') as f:
             json.dump({"last_timestamp": timestamp}, f, indent=2)
         return True
@@ -124,22 +125,63 @@ def save_last_update_timestamp(data_dir):
         logger.error(f"Error saving timestamp file: {str(e)}")
         return False
 
-def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
+def merge_nodes_by_key(existing_nodes, new_nodes):
+    """
+    Merge new nodes into existing nodes by public_key.
+    Updates existing nodes if they have the same public_key, adds new ones.
+
+    Args:
+        existing_nodes (list): List of existing node dictionaries
+        new_nodes (list): List of new node dictionaries to merge
+
+    Returns:
+        list: Merged list of nodes
+    """
+    # Create a dictionary keyed by public_key (uppercase) for fast lookup
+    nodes_dict = {}
+    for node in existing_nodes:
+        if isinstance(node, dict):
+            public_key = node.get('public_key', '')
+            if public_key:
+                nodes_dict[public_key.upper()] = node
+
+    # Update or add new nodes
+    for node in new_nodes:
+        if isinstance(node, dict):
+            public_key = node.get('public_key', '')
+            if public_key:
+                # Update existing or add new
+                nodes_dict[public_key.upper()] = node
+
+    # Convert back to list and sort by public_key
+    merged_nodes = list(nodes_dict.values())
+    merged_nodes.sort(key=lambda x: x.get('public_key', '') if isinstance(x, dict) else str(x))
+
+    return merged_nodes
+
+def update_nodes_data(summary_file="update_summary.txt", data_dir=None, initial=False):
         """Complete workflow: fetch data from API for each category section, save as new_nodes.json,
-        compare with existing nodes.json, save comparison to updated.json, and replace nodes.json with new_nodes.json
+        compare with existing nodes.json, save comparison to updated.json, and merge/append nodes.json with new_nodes.json
 
         Args:
             summary_file (str): Path to save the update summary file. Defaults to "update_summary.txt"
+            data_dir (str): Directory where data files are stored
+            initial (bool): If True, perform initial load (no updated_since parameter). If False, use updated_since and merge.
         """
         data_dir = get_data_dir(data_dir)
-        print("Starting node data update workflow...")
+        mode = "INITIAL" if initial else "INCREMENTAL"
+        print(f"Starting node data update workflow ({mode} mode)...")
 
-        # Get last update timestamp
-        last_timestamp = get_last_update_timestamp(data_dir)
-        if last_timestamp:
-            print(f"Last update timestamp: {last_timestamp}")
+        # Get last update timestamp (only for incremental updates)
+        last_timestamp = None
+        if not initial:
+            last_timestamp = get_last_update_timestamp(data_dir)
+            if last_timestamp:
+                print(f"Last update timestamp: {last_timestamp}")
+            else:
+                print("No previous timestamp found - this appears to be the first run")
         else:
-            print("No previous timestamp found - this appears to be the first run")
+            print("Initial mode: fetching all nodes (no updated_since parameter)")
 
         # Get url_base from [api] section
         try:
@@ -181,8 +223,8 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
 
             # Build the full API URL
             api_url = url_base + iata
-            # Add updated_since parameter if we have a last timestamp
-            if last_timestamp:
+             # Add updated_since parameter only for incremental updates (not initial)
+            if not initial and last_timestamp:
                 # Check if URL already has query parameters
                 separator = "&" if "?" in api_url else "?"
                 api_url = api_url + separator + f"updated_since={last_timestamp}"
@@ -245,18 +287,23 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
                 logger.error(f"Original data keys (if dict): {list(original_data.keys()) if isinstance(original_data, dict) else 'N/A'}")
                 continue
 
-            # Step 2: Save new data as new_nodes.json (temporary file)
-            temp_nodes_file = f"new_{nodes_file}"
-            print(f"2. Saving new data to {temp_nodes_file}...")
-            if not save_data_to_json(new_data, temp_nodes_file, data_dir):
-                print(f"Failed to save new data for category {category_id}")
-                continue
-
-            # Step 3: Load existing nodes file for comparison
-            print(f"3. Loading existing {nodes_file} for comparison...")
+            # Step 2: Load existing nodes file
+            print(f"2. Loading existing {nodes_file}...")
             old_data = load_data_from_json(nodes_file, data_dir)
+            existing_nodes = old_data.get("data", []) if old_data else []
 
-            # Step 4: Compare the data
+            # Step 3: Merge or replace nodes based on mode
+            if initial:
+                # Initial mode: replace all nodes with new data
+                print(f"3. Initial mode: saving all {len(new_data)} nodes to {nodes_file}...")
+                merged_nodes = new_data
+            else:
+                # Incremental mode: merge new nodes with existing by public_key
+                print(f"3. Incremental mode: merging {len(new_data)} new nodes with {len(existing_nodes)} existing nodes...")
+                merged_nodes = merge_nodes_by_key(existing_nodes, new_data)
+                print(f"   Merged result: {len(merged_nodes)} total nodes")
+
+            # Step 4: Compare the data for reporting
             print("4. Comparing new data with existing data...")
             comparison_result = compare_data(new_data, old_data)
 
@@ -280,15 +327,17 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
                 logger.error(f"Error saving comparison results: {str(e)}")
                 continue
 
-            # Step 6: Replace nodes file with new data
+            # Step 6: Save merged nodes to nodes file
             nodes_path = os.path.join(data_dir, nodes_file)
-            temp_nodes_path = os.path.join(data_dir, temp_nodes_file)
-            print(f"6. Replacing {nodes_path} with {temp_nodes_path}...")
+            print(f"6. Saving merged nodes to {nodes_path}...")
             try:
-                shutil.move(temp_nodes_path, nodes_path)
-                print(f"Successfully replaced {nodes_path} with new data")
+                # Use save_data_to_json which wraps in timestamp structure
+                if not save_data_to_json(merged_nodes, nodes_file, data_dir):
+                    print(f"Failed to save merged nodes for category {category_id}")
+                    continue
+                print(f"Successfully saved {len(merged_nodes)} nodes to {nodes_path}")
             except Exception as e:
-                logger.error(f"Error replacing {nodes_path}: {str(e)}")
+                logger.error(f"Error saving nodes to {nodes_path}: {str(e)}")
                 continue
 
             # # Step 7: Build summary for this category
@@ -358,8 +407,14 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
         return True
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Update node data from MQTT API')
+    parser.add_argument('--initial', action='store_true',
+                        help='Perform initial load (fetch all nodes, no updated_since parameter)')
+    args = parser.parse_args()
+
     # Get the directory where this script is located
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # Run the update
-    update_nodes_data(data_dir=script_dir)
+    update_nodes_data(data_dir=script_dir, initial=args.initial)

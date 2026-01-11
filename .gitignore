@@ -7,6 +7,8 @@ reservedNodes*.json
 removedNodes*.json
 update_summary.txt
 repeaterOwners*.json
+offReserved*.json
 placeholder.txt
 .DS_Store
 last_update*
+reaction*.json

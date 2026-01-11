@@ -9,7 +9,7 @@ import os
 import time
 import io
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 import qrcode
 from concurrent.futures import ThreadPoolExecutor
 from helpers import extract_device_types, load_config, load_data_from_json, get_unused_keys, get_repeater
@@ -35,7 +35,11 @@ WARN = "⚠️"
 RESERVED = "⏳"
 pending_remove_selections = {}
 pending_qr_selections = {}  # Track pending QR code selections
+pending_own_selections = {}  # Track pending own/claim selections
+pending_owner_selections = {} # Track pending owner lookup selections
 known_node_keys = set()  # Track known node public_keys
+# Semaphore to limit concurrent purge operations (only allow 1 at a time)
+purge_semaphore = asyncio.Semaphore(1)
 
 def get_allowed_category_ids():
     """Get all allowed category IDs from config sections.
@@ -63,13 +67,13 @@ def get_allowed_category_ids():
 ALLOWED_CATEGORY_IDS = get_allowed_category_ids()
 
 if ALLOWED_CATEGORY_IDS:
-    logger.info(f"Category restriction enabled: commands will only work in category IDs {ALLOWED_CATEGORY_IDS}")
+    logger.info(f"Category restriction enabled: commands will only work in repeater-control channels within category IDs {ALLOWED_CATEGORY_IDS}")
 else:
     logger.info("No category sections found in config - commands will work in all channels")
 
 @lightbulb.hook(lightbulb.ExecutionSteps.CHECKS, skip_when_failed=True)
 async def category_check(pl: lightbulb.ExecutionPipeline, ctx: lightbulb.Context) -> None:
-    """Check if command is being executed in an allowed category"""
+    """Check if command is being executed in the repeater-control channel of an allowed category"""
     # If no category restriction is set, allow all
     if not ALLOWED_CATEGORY_IDS:
         return
@@ -90,6 +94,27 @@ async def category_check(pl: lightbulb.ExecutionPipeline, ctx: lightbulb.Context
         if category_id not in ALLOWED_CATEGORY_IDS:
             await ctx.respond(f"{CROSS} This command can only be used in a regional category.", flags=hikari.MessageFlag.EPHEMERAL)
             raise RuntimeError("Command executed outside allowed category")
+
+        # Get the messenger channel ID for this category from config
+        category_section = str(category_id)
+        messenger_channel_id = config.get(category_section, "messenger_channel_id", fallback=None)
+
+        # If no messenger_channel_id is configured for this category, deny
+        if not messenger_channel_id:
+            await ctx.respond(f"{CROSS} This command can only be used in the repeater-control channel for this region.", flags=hikari.MessageFlag.EPHEMERAL)
+            raise RuntimeError(f"No messenger channel configured for category {category_section}")
+
+        # Convert to int for comparison
+        try:
+            messenger_channel_id = int(messenger_channel_id)
+        except (ValueError, TypeError):
+            await ctx.respond(f"{CROSS} Invalid repeater-control channel configuration for this region.", flags=hikari.MessageFlag.EPHEMERAL)
+            raise RuntimeError(f"Invalid messenger channel ID in category {category_section}")
+
+        # Check if the command is being executed in the messenger channel
+        if ctx.channel_id != messenger_channel_id:
+            await ctx.respond(f"{CROSS} This command can only be used in the repeater-control channel for this region.", flags=hikari.MessageFlag.EPHEMERAL)
+            raise RuntimeError("Command executed outside messenger channel")
     except RuntimeError:
         # Re-raise RuntimeError to fail the pipeline
         raise
@@ -192,13 +217,43 @@ async def get_removed_nodes_file_for_context(ctx: lightbulb.Context) -> str:
     category_id = await get_category_id_from_context(ctx)
     return get_removed_nodes_file_for_category(category_id)
 
+def get_owner_file_for_category(category_id: int | None) -> str:
+    """Get the owner file name based on category ID.
+
+    Maps category IDs to owner file names. If category_id is None or not found,
+    defaults to 'repeaterOwners.json'.
+
+    You can configure category-to-file mapping in config.ini using sections:
+    [1442638798985891940]
+    owners_file = repeaterOwners_socal.json
+    """
+    if category_id is None:
+        return "repeaterOwners.json"
+
+    # Try to get category-specific owner file from config section [category_id]
+    category_section = str(category_id)
+    owner_file = config.get(category_section, "owners_file", fallback=None)
+
+    if owner_file:
+        logger.debug(f"Using category-specific owner file: {owner_file} for category {category_id}")
+        return owner_file
+
+    # Default to repeaterOwners.json if no mapping found
+    logger.debug(f"No category-specific owner file found for category {category_id}, using default repeaterOwners.json")
+    return "repeaterOwners.json"
+
+async def get_owner_file_for_context(ctx: lightbulb.Context) -> str:
+    """Get owner file name based on the category where the command was invoked"""
+    category_id = await get_category_id_from_context(ctx)
+    return get_owner_file_for_category(category_id)
+
 async def get_nodes_data_for_context(ctx: lightbulb.Context):
     """Get nodes data based on the category where the command was invoked"""
     category_id = await get_category_id_from_context(ctx)
     nodes_file = get_nodes_file_for_category(category_id)
     return load_data_from_json(nodes_file)
 
-async def get_repeater_for_context(ctx: lightbulb.Context, prefix: str, days: int = 7):
+async def get_repeater_for_context(ctx: lightbulb.Context, prefix: str, days: int = 14):
     """Get repeater data based on the category where the command was invoked"""
     data = await get_nodes_data_for_context(ctx)
     # Use extract_device_types with the category-specific data
@@ -215,13 +270,13 @@ async def get_repeater_for_context(ctx: lightbulb.Context, prefix: str, days: in
             matching_repeaters.append(contact)
     return matching_repeaters if matching_repeaters else None
 
-async def get_extract_device_types_for_context(ctx: lightbulb.Context, device_types=None, days=7):
+async def get_extract_device_types_for_context(ctx: lightbulb.Context, device_types=None, days=14):
     """Extract device types based on the category where the command was invoked"""
     data = await get_nodes_data_for_context(ctx)
     from helpers.device_utils import extract_device_types
     return extract_device_types(data=data, device_types=device_types, days=days)
 
-async def get_unused_keys_for_context(ctx: lightbulb.Context, days=7):
+async def get_unused_keys_for_context(ctx: lightbulb.Context, days=14):
     """Get unused keys based on the category where the command was invoked"""
     data = await get_nodes_data_for_context(ctx)
     from helpers.device_utils import extract_device_types
@@ -505,6 +560,7 @@ def is_node_removed(contact, removed_nodes_file="removedNodes.json"):
     removed_set = get_removed_nodes_set(removed_nodes_file)
     prefix = contact.get('public_key', '').upper() if contact.get('public_key') else ''
     name = contact.get('name', '').strip()
+    return (prefix, name) in removed_set
 
 def is_node_removed_in_file(contact, removed_nodes_file):
     """Check if a contact node has been removed in a specific file"""
@@ -593,9 +649,366 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
         else:
             await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
 
+async def assign_repeater_owner_role(user_id: int, guild_id: int | None, category_id: int | None = None):
+    """Assign repeater owner roles to a user when they claim a repeater (both global and category-specific)"""
+    try:
+        if not user_id or not guild_id:
+            return False
+
+        # Collect all roles to assign
+        roles_to_assign = []
+
+        # Add global repeater role if configured
+        global_role_id_str = config.get("discord", "repeater_owner_role_id", fallback=None)
+        if global_role_id_str:
+            try:
+                global_role_id = int(global_role_id_str)
+                roles_to_assign.append(global_role_id)
+            except (ValueError, TypeError):
+                pass
+
+        # Add category-specific repeater role if configured
+        if category_id:
+            category_section = str(category_id)
+            category_role_id_str = config.get(category_section, "repeater_owner_role_id", fallback=None)
+            if category_role_id_str:
+                try:
+                    category_role_id = int(category_role_id_str)
+                    if category_role_id not in roles_to_assign:
+                        roles_to_assign.append(category_role_id)
+                except (ValueError, TypeError):
+                    pass
+
+        if not roles_to_assign:
+            logger.debug("No repeater_owner_role_id configured, skipping role assignment")
+            return False
+
+        # Check if user already has all roles
+        try:
+            member = await bot.rest.fetch_member(guild_id, user_id)
+            missing_roles = [rid for rid in roles_to_assign if rid not in member.role_ids]
+            if not missing_roles:
+                logger.debug(f"User {user_id} already has all repeater roles")
+                return True
+        except Exception as e:
+            logger.debug(f"Error checking existing roles: {e}")
+            missing_roles = roles_to_assign  # Assign all if we can't check
+
+        # Assign all missing roles
+        assigned_count = 0
+        for role_id in missing_roles:
+            try:
+                await bot.rest.add_role_to_member(guild_id, user_id, role_id)
+                logger.info(f"Assigned role {role_id} to user {user_id} in guild {guild_id}")
+                assigned_count += 1
+            except hikari.ForbiddenError:
+                logger.warning(f"Bot doesn't have permission to assign role {role_id} in guild {guild_id}")
+            except Exception as e:
+                logger.error(f"Error assigning role {role_id} to user {user_id}: {e}")
+
+        return assigned_count > 0
+    except hikari.NotFoundError as e:
+        logger.warning(f"Role or user not found in guild {guild_id}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Error assigning repeater owner roles: {e}")
+        return False
+
+async def get_owner_info_for_repeater(repeater, owner_file: str):
+    """Get owner information for a repeater from the owner file"""
+    try:
+        public_key = repeater.get('public_key', '')
+        if not public_key:
+            return None
+
+        if not os.path.exists(owner_file):
+            return None
+
+        with open(owner_file, 'r') as f:
+            content = f.read().strip()
+            if not content:
+                return None
+            owners_data = json.loads(content)
+
+        # Find owner by public_key
+        for owner in owners_data.get('data', []):
+            if owner.get('public_key', '').upper() == public_key.upper():
+                return owner
+
+        return None
+    except Exception as e:
+        logger.debug(f"Error getting owner info: {e}")
+        return None
+
+async def can_user_remove_repeater(repeater, user_id: int, ctx_or_interaction) -> tuple[bool, str]:
+    """
+    Check if a user can remove a repeater.
+
+    Args:
+        repeater: The repeater node to check
+        user_id: The Discord user ID of the person trying to remove
+        ctx_or_interaction: Context or interaction object for getting category info
+
+    Returns:
+        Tuple of (can_remove: bool, reason: str)
+    """
+    try:
+        # Get bot owner ID from config
+        bot_owner_id = None
+        try:
+            owner_id_str = config.get("discord", "bot_owner_id", fallback=None)
+            if owner_id_str:
+                bot_owner_id = int(owner_id_str)
+        except (ValueError, TypeError):
+            pass
+
+        # Check if user is the bot owner
+        if bot_owner_id and user_id == bot_owner_id:
+            return (True, "bot_owner")
+
+        # Get owner file to check ownership
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            owner_file = await get_owner_file_for_context(ctx_or_interaction)
+        elif hasattr(ctx_or_interaction, 'channel_id'):
+            try:
+                channel = await bot.rest.fetch_channel(ctx_or_interaction.channel_id)
+                category_id = channel.parent_id
+                owner_file = get_owner_file_for_category(category_id)
+            except Exception:
+                owner_file = "repeaterOwners.json"  # Fallback to default
+        else:
+            owner_file = "repeaterOwners.json"  # Fallback to default
+
+        # Get owner info for this repeater
+        owner_info = await get_owner_info_for_repeater(repeater, owner_file)
+
+        if not owner_info:
+            # No owner set, allow removal (unclaimed repeater)
+            return (True, "no_owner")
+
+        # Check if user is the owner
+        owner_user_id = owner_info.get('user_id')
+        if owner_user_id and int(owner_user_id) == user_id:
+            return (True, "owner")
+
+        # User is not the owner
+        owner_display_name = owner_info.get('display_name') or owner_info.get('username', 'Unknown')
+        return (False, f"Only the owner ({owner_display_name}) or bot owner can remove this repeater")
+
+    except Exception as e:
+        logger.error(f"Error checking if user can remove repeater: {e}")
+        # On error, allow removal (fail open for safety)
+        return (True, "error_check")
+
+async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
+    """Process the ownership claim of a repeater and add to repeaterOwners.json (category-specific)"""
+    try:
+        # Get category-specific owner file
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            owner_file = await get_owner_file_for_context(ctx_or_interaction)
+            username = ctx_or_interaction.user.username if ctx_or_interaction.user else "Unknown"
+            user_id = ctx_or_interaction.user.id if ctx_or_interaction.user else None
+        elif isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            # For ComponentInteraction, we need to get category and user info
+            try:
+                channel = await bot.rest.fetch_channel(ctx_or_interaction.channel_id)
+                category_id = channel.parent_id
+                owner_file = get_owner_file_for_category(category_id)
+                username = ctx_or_interaction.user.username if ctx_or_interaction.user else "Unknown"
+                user_id = ctx_or_interaction.user.id if ctx_or_interaction.user else None
+            except Exception:
+                owner_file = "repeaterOwners.json"  # Fallback to default
+                username = ctx_or_interaction.user.username if ctx_or_interaction.user else "Unknown"
+                user_id = ctx_or_interaction.user.id if ctx_or_interaction.user else None
+        else:
+            owner_file = "repeaterOwners.json"  # Fallback to default
+            username = "Unknown"
+            user_id = None
+
+        # Get display name (nickname if available)
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            display_name = await get_user_display_name_from_member(ctx_or_interaction, user_id, username)
+        elif isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            try:
+                channel = await bot.rest.fetch_channel(ctx_or_interaction.channel_id)
+                if channel.guild_id and user_id:
+                    member = await bot.rest.fetch_member(channel.guild_id, user_id)
+                    display_name = member.nickname or member.display_name or username
+                else:
+                    display_name = username
+            except Exception:
+                display_name = username
+        else:
+            display_name = username
+
+        public_key = selected_repeater.get('public_key', '')
+        if not public_key:
+            error_msg = f"{CROSS} Error: Repeater has no public key"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_msg,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(error_msg, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Load or create owner file
+        if os.path.exists(owner_file):
+            try:
+                with open(owner_file, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        owners_data = json.loads(content)
+                    else:
+                        owners_data = {
+                            "timestamp": datetime.now().isoformat(),
+                            "data": []
+                        }
+            except json.JSONDecodeError:
+                owners_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "data": []
+                }
+        else:
+            owners_data = {
+                "timestamp": datetime.now().isoformat(),
+                "data": []
+            }
+
+        # Check if this public_key already exists
+        existing_owner = None
+        for owner in owners_data.get('data', []):
+            if owner.get('public_key', '').upper() == public_key.upper():
+                existing_owner = owner
+                break
+
+        prefix = public_key[:2].upper() if public_key else '??'
+        name = selected_repeater.get('name', 'Unknown')
+
+        if existing_owner:
+            # Already claimed - show who owns it
+            existing_username = existing_owner.get('username', 'Unknown')
+            existing_display_name = existing_owner.get('display_name', None)
+            if existing_display_name:
+                message = f"{WARN} Repeater {prefix}: {name} is already claimed by **{existing_display_name}**"
+            else:
+                message = f"{WARN} Repeater {prefix}: {name} is already claimed by **{existing_username}**"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    message,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Add new owner entry
+        owner_entry = {
+            "public_key": public_key,
+            "name": name,
+            "username": username,  # Actual Discord username
+            "display_name": display_name,  # Server nickname or display name
+            "user_id": user_id
+        }
+
+        owners_data['data'].append(owner_entry)
+        owners_data['timestamp'] = datetime.now().isoformat()
+
+        # Save to file
+        with open(owner_file, 'w') as f:
+            json.dump(owners_data, f, indent=2)
+
+        # Try to assign role to user
+        guild_id = None
+        category_id = None
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            try:
+                channel = await bot.rest.fetch_channel(ctx_or_interaction.channel_id)
+                guild_id = channel.guild_id
+                category_id = channel.parent_id
+            except Exception:
+                pass
+        elif isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            try:
+                channel = await bot.rest.fetch_channel(ctx_or_interaction.channel_id)
+                guild_id = channel.guild_id
+                category_id = channel.parent_id
+            except Exception:
+                pass
+
+        if user_id and guild_id:
+            role_assigned = await assign_repeater_owner_role(user_id, guild_id, category_id)
+            if role_assigned:
+                message = f"{CHECK} Successfully claimed repeater {prefix}: **{name}**\n✅ Role assigned!"
+            else:
+                message = f"{CHECK} Successfully claimed repeater {prefix}: **{name}**"
+        else:
+            message = f"{CHECK} Successfully claimed repeater {prefix}: **{name}**"
+
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
+                message,
+                components=None,
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        else:
+            await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
+    except Exception as e:
+        logger.error(f"Error processing repeater ownership: {e}")
+        error_message = f"{CROSS} Error claiming repeater: {str(e)}"
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
+                error_message,
+                components=None,
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        else:
+            await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
+
 async def process_repeater_removal(selected_repeater, ctx_or_interaction):
     """Process the removal of a repeater to removedNodes.json (category-specific)"""
     try:
+      # Get user ID from context/interaction
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            user_id = ctx_or_interaction.user.id if ctx_or_interaction.user else None
+        elif isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            user_id = ctx_or_interaction.user.id if ctx_or_interaction.user else None
+        else:
+            user_id = None
+
+        if not user_id:
+            error_message = f"{CROSS} Unable to identify user"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_message,
+                    components=None
+                )
+            else:
+                await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Check if user can remove this repeater
+        can_remove, reason = await can_user_remove_repeater(selected_repeater, user_id, ctx_or_interaction)
+        if not can_remove:
+            error_message = f"{CROSS} {reason}"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_message,
+                    components=None
+                )
+            else:
+                await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
         # Get category-specific removed nodes file
         if isinstance(ctx_or_interaction, lightbulb.Context):
             removed_nodes_file = await get_removed_nodes_file_for_context(ctx_or_interaction)
@@ -655,7 +1068,7 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
                     components=None
                 )
             else:
-                await ctx_or_interaction.respond(message)
+                await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
             return
 
         # Add node to removedNodes.json
@@ -675,10 +1088,10 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
                 components=None
             )
         else:
-            await ctx_or_interaction.respond(message)
+            await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
     except Exception as e:
         logger.error(f"Error processing repeater removal: {e}")
-        error_message = f"Error removing repeater: {str(e)}"
+        error_message = f"{CROSS} Error removing repeater: {str(e)}"
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
             await ctx_or_interaction.create_initial_response(
                 hikari.ResponseType.MESSAGE_UPDATE,
@@ -686,7 +1099,7 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
                 components=None
             )
         else:
-            await ctx_or_interaction.respond(error_message)
+            await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
 
 # Sort lines by prefix (hex value)
 def extract_prefix_for_sort(line):
@@ -823,11 +1236,15 @@ async def periodic_channel_update():
             await asyncio.sleep(60)
 
 async def check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file="reservedNodes.json", owner_file="repeaterOwners.json"):
-    """Check if a new repeater matches a reserved node and add to category-specific repeaterOwners file"""
+    """Check if a new repeater matches a reserved node and add to category-specific repeaterOwners file
+
+    Returns:
+        user_id (int | None): The user_id from the reservation if a match was found and owner was added, None otherwise
+    """
     try:
         # Use the provided reserved_nodes_file (category-specific)
         if not os.path.exists(reserved_nodes_file):
-            return
+            return None
 
         with open(reserved_nodes_file, 'r') as f:
             reserved_data = json.load(f)
@@ -840,15 +1257,16 @@ async def check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_fil
                 break
 
         if not matching_reservation:
-            return
+            return None
 
-        # Get username and user_id from reservation
+        # Get username, display_name, and user_id from reservation
         username = matching_reservation.get('username', 'Unknown')
+        display_name = matching_reservation.get('display_name', username)  # Fallback to username if display_name not present
         user_id = matching_reservation.get('user_id', None)
         public_key = node.get('public_key', '')
 
         if not public_key:
-            return
+            return None
 
         # Use the provided owner_file (category-specific)
         if os.path.exists(owner_file):
@@ -875,13 +1293,14 @@ async def check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_fil
 
         if existing_owner:
             # Already exists, skip
-            return
+            return None
 
         # Add new owner entry
         owner_entry = {
             "public_key": public_key,
             "name": node.get('name', 'Unknown'),
             "username": username,
+            "display_name": display_name,
             "user_id": user_id
         }
 
@@ -889,13 +1308,17 @@ async def check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_fil
         owners_data['timestamp'] = datetime.now().isoformat()
 
         # Save to file
-        with open(owners_file, 'w') as f:
+        with open(owner_file, 'w') as f:
             json.dump(owners_data, f, indent=2)
 
         logger.info(f"Added repeater owner: {username} (public_key: {public_key[:10]}...)")
 
+        # Return user_id so caller can assign roles
+        return user_id
+
     except Exception as e:
         logger.error(f"Error checking reserved repeater and adding owner: {e}")
+        return None
 
 async def check_for_new_nodes():
     """Check all category-specific nodes files for new nodes and send Discord notifications to appropriate channels"""
@@ -1028,7 +1451,19 @@ async def check_for_new_nodes():
                 if node.get('device_role') == 2:
                     message = f"## {emoji_new}  **NEW REPEATER ALERT**\n**{prefix}: {node_name}** has expanded our mesh!\nThank you for your service {emoji_salute}"
                     # Check if this repeater matches a reserved node and add to category-specific owner file
-                    await check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file, owner_file)
+                    user_id = await check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file, owner_file)
+
+                    # If this was a reserved repeater that became active, assign roles
+                    if user_id:
+                        try:
+                            # Get guild_id from the channel
+                            channel = await bot.rest.fetch_channel(int(messenger_channel_id))
+                            guild_id = channel.guild_id if channel.guild_id else None
+
+                            if guild_id:
+                                await assign_repeater_owner_role(user_id, guild_id, category_id)
+                        except Exception as e:
+                            logger.error(f"Error assigning roles for reserved repeater: {e}")
 
                     try:
                         await bot.rest.create_message(int(messenger_channel_id), content=message)
@@ -1059,6 +1494,478 @@ async def periodic_node_watcher():
             logger.error(f"Error in periodic node watcher: {e}")
             # Wait 60 seconds before retrying on error
             await asyncio.sleep(60)
+
+async def purge_old_messages_from_channel(channel_id: int, log_prefix: str = "") -> tuple[int, int]:
+    """
+    Purge messages older than configured days from a channel (default: 4 days from config).
+
+    Args:
+        channel_id: The ID of the channel to purge
+        log_prefix: Optional prefix for log messages
+
+    Returns:
+        Tuple of (deleted_count, failed_count)
+    """
+    # Use semaphore to ensure only one purge operation at a time
+    async with purge_semaphore:
+        deleted_count = 0
+        failed_count = 0
+
+        try:
+            target_channel = await bot.rest.fetch_channel(channel_id)
+
+            # Check if channel is a text channel, news channel, or forum channel
+            is_forum = isinstance(target_channel, hikari.GuildForumChannel)
+            if not isinstance(target_channel, (hikari.GuildTextChannel, hikari.GuildNewsChannel, hikari.GuildForumChannel)):
+                logger.debug(f"{log_prefix}Skipping channel {channel_id}: not a text, news, or forum channel")
+                return (0, 0)
+
+            # Get guild to check permissions
+            if not target_channel.guild_id:
+                logger.debug(f"{log_prefix}Skipping channel {channel_id}: not a guild channel")
+                return (0, 0)
+
+            # Check if bot has MANAGE_MESSAGES permission by attempting to fetch messages
+            # If we can't access the channel, we'll know we don't have permission
+            try:
+                if is_forum:
+                    # For forum channels, try to fetch threads to verify access
+                    threads_response = await bot.rest.fetch_active_threads(target_channel.guild_id)
+                    # Just verify we got a response (access granted)
+                    _ = threads_response
+                else:
+                    # Try to fetch a single message to verify we have access
+                    # This will fail with ForbiddenError if we don't have permission
+                    async for _ in target_channel.fetch_history().limit(1):
+                        break
+            except hikari.ForbiddenError:
+                logger.warning(f"{log_prefix}Skipping channel {channel_id}: bot lacks permission to access channel")
+                return (0, 0)
+            except Exception as e:
+                logger.debug(f"{log_prefix}Could not verify permissions for channel {channel_id}: {e}")
+                # Continue anyway, will fail gracefully when trying to delete
+                pass
+
+            # Get purge days from config (default: 4 days)
+            try:
+                purge_days = int(config.get("discord", "purge_days", fallback="4"))
+            except (ValueError, TypeError):
+                purge_days = 4
+
+            # Calculate the cutoff time
+            cutoff_time = datetime.now().astimezone() - timedelta(days=purge_days)
+            cutoff_snowflake = hikari.Snowflake.from_datetime(cutoff_time)
+
+            logger.info(f"{log_prefix}Starting purge of messages older than {purge_days} days from channel {channel_id}")
+
+            # Handle forum channels differently - iterate through posts (threads)
+            if is_forum:
+                return await _purge_forum_channel(target_channel, cutoff_snowflake, log_prefix)
+
+            # Regular text/news channel handling
+            last_message_id = None
+
+            # Fetch and delete messages in batches
+            while True:
+                try:
+                    # Add a longer delay before fetching to avoid rate limits on fetch operations
+                    await asyncio.sleep(1.0)
+
+                    # Fetch messages (up to 100 at a time)
+                    # Use fetch_history() which returns a LazyIterator
+                    if last_message_id:
+                        message_iterator = target_channel.fetch_history(before=last_message_id).limit(100)
+                    else:
+                        message_iterator = target_channel.fetch_history().limit(100)
+
+                    # Convert iterator to list
+                    messages = []
+                    async for message in message_iterator:
+                        messages.append(message)
+
+                    if not messages:
+                        break
+
+                    # Filter messages older than 14 days
+                    old_messages = [msg for msg in messages if msg.id < cutoff_snowflake]
+
+                    if not old_messages:
+                        # If no old messages in this batch, check if we should continue
+                        if messages and messages[-1].id < cutoff_snowflake:
+                            break
+                        # Otherwise, continue to next batch
+                        last_message_id = messages[-1].id
+                        continue
+
+                    # Delete messages individually (required for messages older than 14 days)
+                    # Rate limit: 5 deletions per 5 seconds per channel
+                    # Be very conservative: add delay between each deletion
+                    batch_deleted = 0
+                    for message in old_messages:
+                        try:
+                            await bot.rest.delete_message(channel_id, message.id)
+                            deleted_count += 1
+                            batch_deleted += 1
+
+                            # Rate limiting: Discord allows 5 deletions per 5 seconds per channel
+                            # Be very conservative - wait longer between deletions
+                            if batch_deleted % 5 == 0:
+                                # After every 5 deletions, wait 2 seconds to ensure we stay well under limit
+                                await asyncio.sleep(2.0)
+                            else:
+                                # Longer delay between each deletion to spread them out more
+                                await asyncio.sleep(0.5)
+
+                        except hikari.NotFoundError:
+                            # Message already deleted, skip
+                            pass
+                        except hikari.ForbiddenError:
+                            # Don't have permission to delete this message, skip
+                            failed_count += 1
+                        except hikari.RateLimitError as e:
+                            # Hit rate limit, wait for the retry_after time plus a buffer
+                            wait_time = getattr(e, 'retry_after', 5.0)
+                            # Add extra buffer to be safe
+                            wait_time = max(wait_time + 1.0, 6.0)
+                            logger.warning(f"{log_prefix}Rate limited, waiting {wait_time} seconds before continuing...")
+                            await asyncio.sleep(wait_time)
+                            # Don't retry immediately - skip this message and continue
+                            # The rate limit bucket needs time to reset
+                            failed_count += 1
+                            # Reset batch counter to avoid compounding delays
+                            batch_deleted = 0
+                        except Exception as e:
+                            logger.error(f"{log_prefix}Error deleting message {message.id} from channel {channel_id}: {e}")
+                            failed_count += 1
+
+                    # Update last_message_id for next batch
+                    if messages:
+                        last_message_id = messages[-1].id
+
+                    # If we didn't find any old messages in this batch and the newest is recent, we're done
+                    if not old_messages and messages and messages[-1].id >= cutoff_snowflake:
+                        break
+
+                    # Longer delay between batches to avoid rate limits (especially for fetching)
+                    # This helps prevent hitting rate limits on the fetch_history endpoint
+                    await asyncio.sleep(3.0)
+
+                except hikari.NotFoundError:
+                    logger.warning(f"{log_prefix}Channel {channel_id} not found or no access")
+                    break
+                except hikari.RateLimitError as e:
+                    # Hit rate limit while fetching, wait and retry
+                    wait_time = getattr(e, 'retry_after', 5.0)
+                    # Add extra buffer to be safe
+                    wait_time = max(wait_time + 1.0, 6.0)
+                    logger.warning(f"{log_prefix}Rate limited while fetching, waiting {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                    # Continue the loop to retry
+                    continue
+                except Exception as e:
+                    logger.error(f"{log_prefix}Error fetching messages from channel {channel_id}: {e}")
+                    # Wait a bit before retrying to avoid hammering the API
+                    await asyncio.sleep(2)
+                    break
+
+            if deleted_count > 0 or failed_count > 0:
+                logger.info(f"{log_prefix}Purge complete for channel {channel_id}: deleted {deleted_count}, failed {failed_count}")
+
+            return (deleted_count, failed_count)
+
+        except Exception as e:
+            logger.error(f"{log_prefix}Error purging channel {channel_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return (0, 0)
+
+async def _purge_forum_channel(forum_channel: hikari.GuildForumChannel, cutoff_snowflake: hikari.Snowflake, log_prefix: str = "") -> tuple[int, int]:
+    """
+    Purge messages older than specified days from a forum channel by iterating through all posts (threads).
+
+    Args:
+        forum_channel: The forum channel to purge
+        cutoff_snowflake: The snowflake ID representing the cutoff time
+        log_prefix: Optional prefix for log messages
+
+    Returns:
+        Tuple of (deleted_count, failed_count)
+    """
+    deleted_count = 0
+    failed_count = 0
+
+    try:
+        logger.info(f"{log_prefix}Forum channel detected, fetching all threads (posts)...")
+
+        # Fetch active threads for this specific forum channel
+        active_threads = []
+        try:
+            # Fetch all active threads in the guild, then filter by parent channel
+            threads_response = await bot.rest.fetch_active_threads(forum_channel.guild_id)
+
+            # Debug: inspect the response structure
+            logger.debug(f"{log_prefix}Threads response type: {type(threads_response)}")
+            logger.debug(f"{log_prefix}Threads response dir: {[attr for attr in dir(threads_response) if not attr.startswith('_')]}")
+
+            # Try different ways to access threads
+            threads_to_check = []
+
+            # Method 1: Check for 'threads' attribute
+            if hasattr(threads_response, 'threads'):
+                threads_dict = threads_response.threads
+                if isinstance(threads_dict, dict):
+                    threads_to_check = list(threads_dict.values())
+                elif hasattr(threads_dict, '__iter__'):
+                    threads_to_check = list(threads_dict)
+
+            # Method 2: Check if response itself is iterable or a dict
+            if not threads_to_check:
+                if isinstance(threads_response, dict):
+                    # Check common keys
+                    for key in ['threads', 'data', 'items', 'results']:
+                        if key in threads_response:
+                            value = threads_response[key]
+                            if isinstance(value, dict):
+                                threads_to_check = list(value.values())
+                            elif hasattr(value, '__iter__'):
+                                threads_to_check = list(value)
+                            break
+                elif hasattr(threads_response, '__iter__') and not isinstance(threads_response, (str, bytes)):
+                    # Try iterating directly
+                    try:
+                        threads_to_check = list(threads_response)
+                    except:
+                        pass
+
+            # Method 3: Check all attributes that might contain threads
+            if not threads_to_check:
+                for attr_name in ['threads', 'data', 'items', 'results', 'channels']:
+                    if hasattr(threads_response, attr_name):
+                        attr_value = getattr(threads_response, attr_name)
+                        if isinstance(attr_value, dict):
+                            threads_to_check = list(attr_value.values())
+                            break
+                        elif hasattr(attr_value, '__iter__') and not isinstance(attr_value, (str, bytes)):
+                            threads_to_check = list(attr_value)
+                            break
+
+            logger.debug(f"{log_prefix}Found {len(threads_to_check)} threads to check")
+
+            # Filter threads that belong to this forum channel
+            for thread in threads_to_check:
+                try:
+                    parent_id = getattr(thread, 'parent_id', None) or getattr(thread, 'parent_channel_id', None)
+                    if parent_id == forum_channel.id:
+                        active_threads.append(thread)
+                        logger.debug(f"{log_prefix}Found active thread: {thread.id}")
+                except Exception as e:
+                    logger.debug(f"{log_prefix}Error checking thread: {e}")
+                    continue
+        except Exception as e:
+            logger.error(f"{log_prefix}Error fetching active threads: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+        # Also fetch archived threads directly from the forum channel
+        archived_threads = []
+        try:
+            # fetch_archived_public_threads returns an async iterator
+            async for thread in forum_channel.fetch_archived_public_threads():
+                archived_threads.append(thread)
+                logger.debug(f"{log_prefix}Found public archived thread: {thread.id}")
+        except Exception as e:
+            logger.debug(f"{log_prefix}Could not fetch public archived threads: {e}")
+
+        # Try fetching private archived threads too
+        try:
+            async for thread in forum_channel.fetch_archived_private_threads():
+                archived_threads.append(thread)
+                logger.debug(f"{log_prefix}Found private archived thread: {thread.id}")
+        except Exception as e:
+            logger.debug(f"{log_prefix}Could not fetch private archived threads: {e}")
+
+        # Also try using REST API method with channel ID
+        try:
+            async for thread in bot.rest.fetch_public_archived_threads(channel=forum_channel.id):
+                # Avoid duplicates
+                if thread.id not in [t.id for t in archived_threads]:
+                    archived_threads.append(thread)
+                    logger.debug(f"{log_prefix}Found archived thread via REST API: {thread.id}")
+        except Exception as e:
+            logger.debug(f"{log_prefix}Could not fetch archived threads via REST API: {e}")
+
+        all_threads = active_threads + archived_threads
+        logger.info(f"{log_prefix}Found {len(all_threads)} thread(s) in forum channel")
+
+        # Process each thread
+        for thread in all_threads:
+            try:
+                # Add delay between threads to avoid rate limits
+                await asyncio.sleep(1.0)
+
+                thread_deleted = 0
+                thread_failed = 0
+                last_message_id = None
+
+                # Fetch and delete messages from this thread
+                while True:
+                    try:
+                        await asyncio.sleep(0.5)  # Delay before fetching
+
+                        # Fetch messages from thread (threads are channels in Hikari)
+                        # Need to fetch the thread as a channel first
+                        thread_channel = await bot.rest.fetch_channel(thread.id)
+                        if last_message_id:
+                            message_iterator = thread_channel.fetch_history(before=last_message_id).limit(100)
+                        else:
+                            message_iterator = thread_channel.fetch_history().limit(100)
+
+                        messages = []
+                        async for message in message_iterator:
+                            messages.append(message)
+
+                        if not messages:
+                            break
+
+                        # Filter messages older than 14 days
+                        old_messages = [msg for msg in messages if msg.id < cutoff_snowflake]
+
+                        if not old_messages:
+                            if messages and messages[-1].id < cutoff_snowflake:
+                                break
+                            last_message_id = messages[-1].id
+                            continue
+
+                        # Delete old messages
+                        batch_deleted = 0
+                        for message in old_messages:
+                            try:
+                                await bot.rest.delete_message(thread.id, message.id)
+                                thread_deleted += 1
+                                batch_deleted += 1
+
+                                # Rate limiting
+                                if batch_deleted % 5 == 0:
+                                    await asyncio.sleep(2.0)
+                                else:
+                                    await asyncio.sleep(0.5)
+
+                            except hikari.NotFoundError:
+                                pass
+                            except hikari.ForbiddenError:
+                                thread_failed += 1
+                            except hikari.RateLimitError as e:
+                                wait_time = max(getattr(e, 'retry_after', 5.0) + 1.0, 6.0)
+                                logger.warning(f"{log_prefix}Rate limited in thread {thread.id}, waiting {wait_time} seconds...")
+                                await asyncio.sleep(wait_time)
+                                thread_failed += 1
+                                batch_deleted = 0
+                            except Exception as e:
+                                logger.error(f"{log_prefix}Error deleting message {message.id} from thread {thread.id}: {e}")
+                                thread_failed += 1
+
+                        if messages:
+                            last_message_id = messages[-1].id
+
+                        if not old_messages and messages and messages[-1].id >= cutoff_snowflake:
+                            break
+
+                        await asyncio.sleep(2.0)  # Delay between batches
+
+                    except hikari.NotFoundError:
+                        # Thread not found or no access
+                        break
+                    except hikari.RateLimitError as e:
+                        wait_time = max(getattr(e, 'retry_after', 5.0) + 1.0, 6.0)
+                        logger.warning(f"{log_prefix}Rate limited while fetching thread {thread.id}, waiting {wait_time} seconds...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    except Exception as e:
+                        logger.error(f"{log_prefix}Error fetching messages from thread {thread.id}: {e}")
+                        break
+
+                deleted_count += thread_deleted
+                failed_count += thread_failed
+
+                if thread_deleted > 0:
+                    logger.info(f"{log_prefix}Deleted {thread_deleted} message(s) from thread {thread.id}")
+
+            except Exception as e:
+                logger.error(f"{log_prefix}Error processing thread {thread.id}: {e}")
+                continue
+
+        return (deleted_count, failed_count)
+
+    except Exception as e:
+        logger.error(f"{log_prefix}Error purging forum channel: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return (0, 0)
+
+async def periodic_message_purge():
+    """Periodically purge messages older than configured days from all configured messenger channels"""
+    # Wait for bot to fully start
+    await asyncio.sleep(30)
+
+    while True:
+        try:
+            # Get all feed channel IDs from config
+            channel_ids = set()
+
+            # Add global feed channel if configured
+            global_feed_id = config.get("discord", "feed_channel_id", fallback=None)
+            if global_feed_id:
+                try:
+                    channel_ids.add(int(global_feed_id))
+                except (ValueError, TypeError):
+                    pass
+
+            # Add category-specific feed channels
+            for section in config.sections():
+                try:
+                    # Try to convert to int to see if it's a category ID
+                    category_id = int(section)
+                    # Check if it has feed_channel_id
+                    feed_id = config.get(section, "feed_channel_id", fallback=None)
+                    if feed_id:
+                        try:
+                            channel_ids.add(int(feed_id))
+                        except (ValueError, TypeError):
+                            pass
+                except (ValueError, TypeError):
+                    # Not a numeric section, skip
+                    continue
+
+            if not channel_ids:
+                logger.debug("No feed channels configured for automatic purge")
+            else:
+                logger.info(f"Starting automatic purge of {len(channel_ids)} feed channel(s)")
+                total_deleted = 0
+                total_failed = 0
+
+                for channel_id in channel_ids:
+                    deleted, failed = await purge_old_messages_from_channel(
+                        channel_id,
+                        log_prefix=f"[Auto-purge] "
+                    )
+                    total_deleted += deleted
+                    total_failed += failed
+                    # Much longer delay between channels to avoid rate limits
+                    # This is critical when purging multiple channels to avoid hitting global rate limits
+                    await asyncio.sleep(10)
+
+                if total_deleted > 0 or total_failed > 0:
+                    logger.info(f"Automatic purge complete: {total_deleted} deleted, {total_failed} failed across {len(channel_ids)} channel(s)")
+
+            # Run once per day (86400 seconds)
+            await asyncio.sleep(86400)
+
+        except Exception as e:
+            logger.error(f"Error in periodic message purge: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Wait 1 hour before retrying on error
+            await asyncio.sleep(3600)
 
 async def send_long_message(ctx, header, lines, footer=None, max_length=2000):
     """Send a message that may exceed Discord's character limit by splitting into multiple messages"""
@@ -1161,12 +2068,13 @@ async def on_starting(event: hikari.StartingEvent):
     asyncio.create_task(init_emojis_delayed())
     asyncio.create_task(periodic_channel_update())
     asyncio.create_task(periodic_node_watcher())
+    asyncio.create_task(periodic_message_purge())
 
 @client.register()
 class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
     description="Get list of active repeaters", hooks=[category_check]):
 
-    days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
+    days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -1175,12 +2083,12 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
             # Load nodes data based on the category where the command was invoked
             data = await get_nodes_data_for_context(ctx)
             if data is None:
-                await ctx.respond("Error retrieving repeater list.")
+                await ctx.respond("Error retrieving repeater list.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             contacts = data.get("data", []) if isinstance(data, dict) else data
             if not isinstance(contacts, list):
-                await ctx.respond("Error retrieving repeater list.")
+                await ctx.respond("Error retrieving repeater list.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             # Filter to repeaters only and normalize field names
@@ -1194,13 +2102,15 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                 if contact.get('device_role') == 2:
                     repeaters.append(contact)
 
-            # Filter out removed nodes
-            repeaters = [r for r in repeaters if not is_node_removed(r)]
+            # Filter out removed nodes (category-specific)
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+            repeaters = [r for r in repeaters if not is_node_removed_in_file(r, removed_nodes_file)]
 
             # Track active repeater prefixes to avoid duplicates
             active_prefixes = set()
 
             lines = []
+            active_repeater_count = 0  # Track count of active repeaters only
             now = datetime.now().astimezone()
 
             # Add active repeaters
@@ -1227,6 +2137,7 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
 
                     # Only show nodes within the specified days window
                     if within_window or days_ago is None:
+                        active_repeater_count += 1  # Count this active repeater
                         if days_ago is None:
                             # No valid last_seen timestamp
                             lines.append(f"⚪ {prefix}: {name} (no timestamp)")
@@ -1256,13 +2167,13 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
 
             if lines:
                 header = "Active Repeaters:"
-                footer = f"Total Repeaters: {len(lines)}"
+                footer = f"Total Active Repeaters: {active_repeater_count}"
                 await send_long_message(ctx, header, lines, footer)
             else:
                 await ctx.respond("No active repeaters found.")
         except Exception as e:
             logger.error(f"Error in list command: {e}")
-            await ctx.respond("Error retrieving repeater list.")
+            await ctx.respond("Error retrieving repeater list.", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -1277,11 +2188,13 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
         try:
             devices = await get_extract_device_types_for_context(ctx, device_types=['repeaters'], days=self.days)
             if devices is None:
-                await ctx.respond("Error retrieving offline repeaters.")
+                await ctx.respond("Error retrieving offline repeaters.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             repeaters = devices.get('repeaters', [])
-            repeaters = [r for r in repeaters if not is_node_removed(r)]
+            # Filter out removed nodes (category-specific)
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+            repeaters = [r for r in repeaters if not is_node_removed_in_file(r, removed_nodes_file)]
             if repeaters:
                 lines = []
                 now = datetime.now().astimezone()
@@ -1307,14 +2220,14 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
                 await ctx.respond("No offline repeaters found.")
         except Exception as e:
             logger.error(f"Error in offline command: {e}")
-            await ctx.respond("Error retrieving offline repeaters.")
+            await ctx.respond("Error retrieving offline repeaters.", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
 class OpenKeysCommand(lightbulb.SlashCommand, name="open",
     description="Get list of unused hex keys", hooks=[category_check]):
 
-    days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
+    days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -1343,14 +2256,14 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
             await ctx.respond(message)
         except Exception as e:
             logger.error(f"Error in open command: {e}")
-            await ctx.respond("Error retrieving unused keys.")
+            await ctx.respond("Error retrieving unused keys.", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
 class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
     description="Get list of duplicate repeater prefixes", hooks=[category_check]):
 
-    days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
+    days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -1358,11 +2271,13 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
         try:
             devices = await get_extract_device_types_for_context(ctx, device_types=['repeaters'], days=self.days)
             if devices is None:
-                await ctx.respond("Error retrieving duplicate prefixes.")
+                await ctx.respond("Error retrieving duplicate prefixes.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             repeaters = devices.get('repeaters', [])
-            repeaters = [r for r in repeaters if not is_node_removed(r)]
+             # Filter out removed nodes (category-specific)
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+            repeaters = [r for r in repeaters if not is_node_removed_in_file(r, removed_nodes_file)]
             if repeaters:
                 # Group repeaters by prefix
                 by_prefix = {}
@@ -1384,9 +2299,9 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
                                 if last_seen:
                                     ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
                                     days_ago = (now - ls).days
-                                    if days_ago > 12:
+                                    if days_ago >= 12:
                                         lines.append(f"{CROSS} {prefix}: {name} ({days_ago} days ago)") # red
-                                    elif days_ago > 3:
+                                    elif days_ago >= 3:
                                         lines.append(f"{WARN} {prefix}: {name} ({days_ago} days ago)") # yellow
                                     else:
                                         lines.append(f"{CHECK} {prefix}: {name}")
@@ -1400,7 +2315,7 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
             await ctx.respond(message)
         except Exception as e:
             logger.error(f"Error in dupes command: {e}")
-            await ctx.respond("Error retrieving duplicate prefixes.")
+            await ctx.respond("Error retrieving duplicate prefixes.", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -1408,41 +2323,32 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
     description="Check if a hex prefix is available", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
-    days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
+    days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
-        """Check if a hex prefix is available"""
+        """Check if a hex prefix is available and list all nodes with that prefix"""
         try:
             hex_prefix = self.text.upper().strip()
 
             # Validate hex format
             if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/prefix A1`")
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/prefix A1`", flags=hikari.MessageFlag.EPHEMERAL)
                 return
+
+            # Collect all nodes with this prefix
+            active_nodes = []
+            reserved_nodes = []
 
             # Check nodes JSON file first (active repeaters)
             repeaters = await get_repeater_for_context(ctx, hex_prefix, days=self.days)
 
-            # Filter out removed nodes
+            # Filter out removed nodes (category-specific)
             if repeaters:
-                repeaters = [r for r in repeaters if not is_node_removed(r)]
+                removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                repeaters = [r for r in repeaters if not is_node_removed_in_file(r, removed_nodes_file)]
 
-            if repeaters and len(repeaters) > 0:
-                # Prefix is actively in use
-                repeater = repeaters[0]  # Get the first repeater
-                if not isinstance(repeater, dict):
-                    message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (data error)"
-                else:
-                    name = repeater.get('name', 'Unknown')
-
-                    message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n\n**Current User:**\n"
-                    message += f"Name: {name}\n"
-
-                    if len(repeaters) > 1:
-                        message += f"\n\n*Note: {len(repeaters)} repeater(s) found with this prefix. use `/stats` to see them*"
-                await ctx.respond(message)
-                return
+            active_nodes = repeaters
 
             # Check reserved nodes file
             reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
@@ -1452,24 +2358,53 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                         reserved_data = json.load(f)
                         for node in reserved_data.get('data', []):
                             if node.get('prefix', '').upper() == hex_prefix:
-                                message = f"{RESERVED} {hex_prefix} is on the **RESERVED LIST**"
-                                await ctx.respond(message)
-                                return
+                                reserved_nodes.append(node)
                 except Exception as e:
                     logger.debug(f"Error reading reserved nodes file: {e}")
 
-            # Get unused keys
-            unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
+            # Build response message
+            message_parts = []
 
-            if unused_keys and hex_prefix in unused_keys:
-                message = f"{CHECK} {hex_prefix} is **AVAILABLE** for use!"
+            if active_nodes or reserved_nodes:
+                # Prefix is in use or reserved
+                message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\nPrefix used by:")
+
+                # List active nodes
+                if active_nodes:
+                  message_parts.append(f"\nActive Repeater(s):")
+                    for i, repeater in enumerate(active_nodes, 1):
+                        if isinstance(repeater, dict):
+                            name = repeater.get('name', 'Unknown')
+                            message_parts.append(f"{name}")
+                        else:
+                            message_parts.append(f"(data error)")
+
+                # List reserved nodes
+                if reserved_nodes:
+                    message_parts.append(f"\nReserved:")
+                    for i, node in enumerate(reserved_nodes, 1):
+                        name = node.get('name', 'Unknown')
+                        display_name = node.get('display_name', node.get('username', 'Unknown'))
+                        message_parts.append(f"{name} (reserved by {display_name})")
+
+                # Summary
+                total = len(active_nodes) + len(reserved_nodes)
+                if total = 0:
+                    message_parts.append(f"\n{CHECK} {hex_prefix} is **AVAILABLE** for use!")
             else:
-                message = f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (already in use)"
+                # Check if prefix is in unused keys
+                unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
 
+                if unused_keys and hex_prefix in unused_keys:
+                    message_parts.append(f"{CHECK} {hex_prefix} is **AVAILABLE** for use!")
+                else:
+                    message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (may be in use or removed)")
+
+            message = "\n".join(message_parts)
             await ctx.respond(message)
         except Exception as e:
             logger.error(f"Error in prefix command: {e}")
-            await ctx.respond("Error checking prefix availability.")
+            await ctx.respond("Error checking prefix availability.", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -1477,7 +2412,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
     description="Get the stats of a repeater", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
-    days = lightbulb.number('days', 'Days to check (default: 7)', default=7)
+    days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -1487,22 +2422,23 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
 
             # Validate hex format
             if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/prefix A1`")
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/prefix A1`", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             # Get repeaters (now returns a list)
             repeaters = await get_repeater_for_context(ctx, hex_prefix, days=self.days)
 
-            # Filter out removed nodes
+            # Filter out removed nodes (category-specific)
             if repeaters:
-                repeaters = [r for r in repeaters if not is_node_removed(r)]
+                removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                repeaters = [r for r in repeaters if not is_node_removed_in_file(r, removed_nodes_file)]
 
             if repeaters and len(repeaters) > 0:
                 if len(repeaters) == 1:
                     # Single repeater - show detailed info
                     repeater = repeaters[0]
                     if not isinstance(repeater, dict):
-                        await ctx.respond("Error: Invalid repeater data")
+                        await ctx.respond("Error: Invalid repeater data", flags=hikari.MessageFlag.EPHEMERAL)
                         return
 
                     name = repeater.get('name', 'Unknown')
@@ -1560,7 +2496,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
             await ctx.respond(message)
         except Exception as e:
             logger.error(f"Error in stats command: {e}")
-            await ctx.respond("Error retrieving repeater stats.")
+            await ctx.respond("Error retrieving repeater stats.", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -1578,10 +2514,40 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
 
             # Validate hex format
             if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`")
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             name = self.name.strip()
+
+            # First, check if prefix is currently in use by an active repeater (within last 14 days)
+            repeaters = await get_repeater_for_context(ctx, hex_prefix, days=14)
+            if repeaters:
+                # Filter out removed nodes (category-specific)
+                removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                repeaters = [r for r in repeaters if not is_node_removed_in_file(r, removed_nodes_file)]
+                if repeaters:
+                    repeater = repeaters[0]
+                    current_name = repeater.get('name', 'Unknown')
+                    await ctx.respond(
+                        f"{CROSS} Prefix {hex_prefix} is **NOT AVAILABLE** - currently in use by: **{current_name}**\n"
+                        f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
+                    )
+                    return
+
+            # Check if prefix is in unused keys (available for reservation) - uses 14 days
+            unused_keys = await get_unused_keys_for_context(ctx, days=14)
+            if unused_keys is None:
+                await ctx.respond("Error: Could not check prefix availability. Please try again.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # If prefix is not in unused keys, it's not available
+            if hex_prefix not in unused_keys:
+                await ctx.respond(
+                    f"{CROSS} Prefix {hex_prefix} is **NOT AVAILABLE** for reservation.\n"
+                    f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*",
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+                return
 
             # Load existing reservedNodes.json or create new structure (category-specific)
             reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
@@ -1594,7 +2560,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                     "data": []
                 }
 
-            # Check if prefix already exists
+            # Check if prefix already exists in reserved list
             existing_node = None
             for node in reserved_data['data']:
                 if node.get('prefix', '').upper() == hex_prefix:
@@ -1602,34 +2568,10 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                     break
 
             if existing_node:
-                await ctx.respond(f"{CROSS} {hex_prefix} with name: **{name}** has already been reserved")
-                return
-
-            # Check if prefix is currently in use by an active repeater
-            unused_keys = await get_unused_keys_for_context(ctx, days=7)
-            if unused_keys is None:
-                await ctx.respond("Error: Could not check prefix availability. Please try again.")
-                return
-
-            # Check if prefix is in unused keys (available for reservation)
-            if hex_prefix not in unused_keys:
-                # Prefix is currently in use - get repeater info to show who's using it
-                repeaters = await get_repeater_for_context(ctx, hex_prefix, days=7)
-                if repeaters:
-                    # Filter out removed nodes
-                    repeaters = [r for r in repeaters if not is_node_removed(r)]
-                    if repeaters:
-                        repeater = repeaters[0]
-                        current_name = repeater.get('name', 'Unknown')
-                        await ctx.respond(
-                            f"{CROSS} Prefix {hex_prefix} is **NOT AVAILABLE** - currently in use by: **{current_name}**\n"
-                            f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
-                        )
-                        return
-
-                # Prefix not in unused keys but no active repeater found (edge case)
+                existing_name = existing_node.get('name', 'Unknown')
+                existing_display_name = existing_node.get('display_name', existing_node.get('username', 'Unknown'))
                 await ctx.respond(
-                    f"{CROSS} Prefix {hex_prefix} is **NOT AVAILABLE** for reservation.\n"
+                    f"{CROSS} {hex_prefix} with name: **{existing_name}** has already been reserved by **{existing_display_name}**\n",
                     f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
                 )
                 return
@@ -1640,11 +2582,12 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
             # Fetch and save the user's display name (server nickname if available)
             display_name = await get_user_display_name_from_member(ctx, user_id, username)
 
-            # Create node entry - save display name as username, and also save user_id
+            # Create node entry - save both username and display_name, and also save user_id
             node_entry = {
                 "prefix": hex_prefix,
                 "name": name,
-                "username": display_name,  # Save display name (nickname if available, otherwise username)
+                "username": username,  # Actual Discord username
+                "display_name": display_name,  # Display name (nickname if available, otherwise username)
                 "user_id": user_id,
                 "added_at": datetime.now().isoformat()
             }
@@ -1663,7 +2606,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
             await ctx.respond(message)
         except Exception as e:
             logger.error(f"Error in reserve command: {e}")
-            await ctx.respond(f"Error reserving hex prefix for repeater: {str(e)}")
+            await ctx.respond(f"Error reserving hex prefix for repeater: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -1680,13 +2623,13 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
 
             # Validate hex format
             if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`")
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             # Load existing reservedNodes.json (category-specific)
             reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
             if not os.path.exists(reserved_nodes_file):
-                await ctx.respond("Error: list does not exist)")
+                await ctx.respond("Error: list does not exist)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             with open(reserved_nodes_file, 'r') as f:
@@ -1715,7 +2658,7 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             await ctx.respond(message)
         except Exception as e:
             logger.error(f"Error in release command: {e}")
-            await ctx.respond(f"Error releasing hex prefix: {str(e)}")
+            await ctx.respond(f"Error releasing hex prefix: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -1732,13 +2675,13 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
 
             # Validate hex format
             if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`")
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             # Load nodes.json (category-specific)
             nodes_data = await get_nodes_data_for_context(ctx)
             if nodes_data is None:
-                await ctx.respond("Error: nodes data not found")
+                await ctx.respond("Error: nodes data not found", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             # Find all repeaters with matching prefix (device_role == 2)
@@ -1839,7 +2782,301 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
             await process_repeater_removal(selected_repeater, ctx)
         except Exception as e:
             logger.error(f"Error in remove command: {e}")
-            await ctx.respond(f"{CROSS} Error removing repeater: {str(e)}")
+            await ctx.respond(f"Error removing repeater: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
+class OwnRepeaterCommand(lightbulb.SlashCommand, name="own",
+    description="Claim ownership of a repeater", hooks=[category_check]):
+
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Claim ownership of a repeater"""
+        try:
+            hex_prefix = self.text.upper().strip()
+
+            # Validate hex format
+            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Load nodes.json (category-specific)
+            nodes_data = await get_nodes_data_for_context(ctx)
+            if nodes_data is None:
+                await ctx.respond("Error: nodes data not found", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Find all repeaters with matching prefix (device_role == 2)
+            nodes_list = nodes_data.get('data', [])
+            matching_repeaters = []
+
+            for node in nodes_list:
+                # Normalize field names
+                normalize_node(node)
+                node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
+                # Only consider repeaters (device_role == 2)
+                if node_prefix == hex_prefix and node.get('device_role') == 2:
+                    # Check if already removed
+                    removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                    if not is_node_removed_in_file(node, removed_nodes_file):
+                        matching_repeaters.append(node)
+
+            if not matching_repeaters:
+                await ctx.respond(f"{CROSS} No repeater found with hex prefix {hex_prefix}", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # If multiple repeaters found, show select menu
+            if len(matching_repeaters) > 1:
+                # Create select menu options
+                options = []
+                for i, repeater in enumerate(matching_repeaters):
+                    name = repeater.get('name', 'Unknown')
+                    last_seen = repeater.get('last_seen', 'Unknown')
+
+                    # Format last_seen for display
+                    formatted_last_seen = "Unknown"
+                    if last_seen != 'Unknown':
+                        try:
+                            last_seen_dt = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
+                            days_ago = (datetime.now(last_seen_dt.tzinfo) - last_seen_dt).days
+                            formatted_last_seen = f"{days_ago} days ago"
+                        except Exception:
+                            formatted_last_seen = "Invalid timestamp"
+
+                    # Create option label (Discord limit: 100 chars)
+                    label = f"{name[:50]}"  # Truncate name if too long
+                    description = f"Last seen: {formatted_last_seen}"[:100]
+
+                    # Use index as value
+                    options.append(
+                        hikari.SelectMenuOption(
+                            label=label,
+                            description=description,
+                            value=str(i),
+                            emoji=EMOJIS[i],
+                            is_default=False
+                        )
+                    )
+
+                # Create custom ID for this selection
+                custom_id = f"own_select_{hex_prefix}_{ctx.interaction.id}"
+
+                # Store the matching repeaters for later retrieval
+                pending_own_selections[custom_id] = matching_repeaters
+
+                # Create select menu using hikari's builder
+                action_row_builder = hikari.impl.MessageActionRowBuilder()
+
+                # add_text_menu returns a TextSelectMenuBuilder
+                select_menu_builder = action_row_builder.add_text_menu(
+                    custom_id,  # custom_id must be positional
+                    placeholder="Select a repeater to claim",
+                    min_values=1,
+                    max_values=1
+                )
+
+                for option in options:
+                    select_menu_builder.add_option(
+                        option.label,  # label must be positional
+                        option.value,  # value must be positional
+                        description=option.description,
+                        emoji=option.emoji,
+                        is_default=option.is_default
+                    )
+
+                await ctx.respond(
+                    f"Found {len(matching_repeaters)} repeater(s) with prefix {hex_prefix}. Please select one:",
+                    components=[action_row_builder],
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+
+                # Return early - the component listener will handle the selection
+                return
+            else:
+                # Only one repeater found, use it directly
+                selected_repeater = matching_repeaters[0]
+
+            # Process the ownership claim (for single repeater case)
+            await process_repeater_ownership(selected_repeater, ctx)
+        except Exception as e:
+            logger.error(f"Error in own command: {e}")
+            await ctx.respond(f"Error claiming repeater: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
+class OwnerRepeaterCommand(lightbulb.SlashCommand, name="owner",
+    description="Look up the owner of a repeater", hooks=[category_check], default_member_permissions=hikari.Permissions.MANAGE_MESSAGES):
+
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Look up the owner of a repeater"""
+        try:
+            hex_prefix = self.text.upper().strip()
+
+            # Validate hex format
+            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Load nodes.json (category-specific)
+            nodes_data = await get_nodes_data_for_context(ctx)
+            if nodes_data is None:
+                await ctx.respond("Error: nodes data not found", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Find all repeaters with matching prefix (device_role == 2)
+            nodes_list = nodes_data.get('data', [])
+            matching_repeaters = []
+
+            for node in nodes_list:
+                # Normalize field names
+                normalize_node(node)
+                node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
+                # Only consider repeaters (device_role == 2)
+                if node_prefix == hex_prefix and node.get('device_role') == 2:
+                    # Check if already removed
+                    removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                    if not is_node_removed_in_file(node, removed_nodes_file):
+                        matching_repeaters.append(node)
+
+            if not matching_repeaters:
+                await ctx.respond(f"{CROSS} No repeater found with hex prefix {hex_prefix}", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Get owner file
+            owner_file = await get_owner_file_for_context(ctx)
+
+            # If multiple repeaters found, show select menu
+            if len(matching_repeaters) > 1:
+                # Create select menu options
+                options = []
+                for i, repeater in enumerate(matching_repeaters):
+                    name = repeater.get('name', 'Unknown')
+                    last_seen = repeater.get('last_seen', 'Unknown')
+
+                    # Format last_seen for display
+                    formatted_last_seen = "Unknown"
+                    if last_seen != 'Unknown':
+                        try:
+                            last_seen_dt = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
+                            days_ago = (datetime.now(last_seen_dt.tzinfo) - last_seen_dt).days
+                            formatted_last_seen = f"{days_ago} days ago"
+                        except Exception:
+                            formatted_last_seen = "Invalid timestamp"
+
+                    # Check if this repeater has an owner
+                    owner_info = await get_owner_info_for_repeater(repeater, owner_file)
+                    owner_status = " (claimed)" if owner_info else " (unclaimed)"
+
+                    # Create option label (Discord limit: 100 chars)
+                    label = f"{name[:45]}{owner_status}"[:100]  # Truncate name if too long
+                    description = f"Last seen: {formatted_last_seen}"[:100]
+
+                    # Use index as value
+                    options.append(
+                        hikari.SelectMenuOption(
+                            label=label,
+                            description=description,
+                            value=str(i),
+                            emoji=EMOJIS[i],
+                            is_default=False
+                        )
+                    )
+
+                # Create custom ID for this selection
+                custom_id = f"owner_select_{hex_prefix}_{ctx.interaction.id}"
+
+                # Store the matching repeaters and owner file for later retrieval
+                pending_owner_selections[custom_id] = (matching_repeaters, owner_file)
+
+                # Create select menu using hikari's builder
+                action_row_builder = hikari.impl.MessageActionRowBuilder()
+
+                # add_text_menu returns a TextSelectMenuBuilder
+                select_menu_builder = action_row_builder.add_text_menu(
+                    custom_id,  # custom_id must be positional
+                    placeholder="Select a repeater to view owner",
+                    min_values=1,
+                    max_values=1
+                )
+
+                for option in options:
+                    select_menu_builder.add_option(
+                        option.label,  # label must be positional
+                        option.value,  # value must be positional
+                        description=option.description,
+                        emoji=option.emoji,
+                        is_default=option.is_default
+                    )
+
+                await ctx.respond(
+                    f"Found {len(matching_repeaters)} repeater(s) with prefix {hex_prefix}. Please select one:",
+                    components=[action_row_builder],
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+
+                # Return early - the component listener will handle the selection
+                return
+            else:
+                # Only one repeater found, display owner info directly
+                selected_repeater = matching_repeaters[0]
+                await display_owner_info(selected_repeater, owner_file, ctx)
+        except Exception as e:
+            logger.error(f"Error in owner command: {e}")
+            await ctx.respond(f"{CROSS} Error looking up owner: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+async def display_owner_info(repeater, owner_file: str, ctx_or_interaction):
+    """Display owner information for a repeater"""
+    try:
+        public_key = repeater.get('public_key', '')
+        name = repeater.get('name', 'Unknown')
+        prefix = public_key[:2].upper() if public_key else '??'
+
+        # Get owner info
+        owner_info = await get_owner_info_for_repeater(repeater, owner_file)
+
+        if owner_info:
+            owner_username = owner_info.get('username', 'Unknown')
+            owner_display_name = owner_info.get('display_name', None)
+            owner_user_id = owner_info.get('user_id', None)
+
+            message = f"Repeater **{prefix}: {name}**\n"
+            if owner_display_name:
+                message += f"Owner: **{owner_display_name}**"
+            else:
+                message += f"Owner: **{owner_username}**"
+            # if owner_user_id:
+            #     message += f" (<@{owner_user_id}>)"
+        else:
+            message = f"**Repeater {prefix}: {name}**\n"
+            message += f"{WARN} No owner claimed for this repeater"
+
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
+                message,
+                components=None,
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        else:
+            await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
+    except Exception as e:
+        logger.error(f"Error displaying owner info: {e}")
+        error_message = f"Error displaying owner information: {str(e)}"
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
+                error_message,
+                components=None,
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        else:
+            await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @bot.listen()
@@ -1897,6 +3134,54 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                     components=None
                 )
 
+    # Check if this is an own/claim selection
+    elif custom_id and custom_id.startswith("own_select_"):
+        # Extract the custom_id to get the matching repeaters
+        if custom_id in pending_own_selections:
+            matching_repeaters = pending_own_selections[custom_id]
+
+            # Get the selected index
+            if interaction.values and len(interaction.values) > 0:
+                selected_index = int(interaction.values[0])
+                selected_repeater = matching_repeaters[selected_index]
+
+                # Process the ownership claim
+                await process_repeater_ownership(selected_repeater, interaction)
+
+                # Clean up the stored selection
+                del pending_own_selections[custom_id]
+            else:
+                await interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    f"{CROSS} No selection made",
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+
+    # Check if this is an owner lookup selection
+    elif custom_id and custom_id.startswith("owner_select_"):
+        # Extract the custom_id to get the matching repeaters and owner file
+        if custom_id in pending_owner_selections:
+            matching_repeaters, owner_file = pending_owner_selections[custom_id]
+
+            # Get the selected index
+            if interaction.values and len(interaction.values) > 0:
+                selected_index = int(interaction.values[0])
+                selected_repeater = matching_repeaters[selected_index]
+
+                # Display owner info
+                await display_owner_info(selected_repeater, owner_file, interaction)
+
+                # Clean up the stored selection
+                del pending_owner_selections[custom_id]
+            else:
+                await interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    f"{CROSS} No selection made",
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+
 
 @client.register()
 class QRCodeCommand(lightbulb.SlashCommand, name="qr",
@@ -1918,9 +3203,10 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
             # Get repeaters (now returns a list)
             repeaters = await get_repeater_for_context(ctx, hex_prefix)
 
-            # Filter out removed nodes
+            # Filter out removed nodes (category-specific)
             if repeaters:
-                repeaters = [r for r in repeaters if not is_node_removed(r)]
+                removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                repeaters = [r for r in repeaters if not is_node_removed_in_file(r, removed_nodes_file)]
 
             if not repeaters or len(repeaters) == 0:
                 await ctx.respond(f"{CROSS} No repeater found with prefix {hex_prefix}.", flags=hikari.MessageFlag.EPHEMERAL)
@@ -1999,7 +3285,7 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
                 await generate_and_send_qr(selected_repeater, ctx)
         except Exception as e:
             logger.error(f"Error in qr command: {e}")
-            await ctx.respond(f"{CROSS} Error generating QR code: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond(f"Error generating QR code: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -2035,7 +3321,7 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
                 await ctx.respond("No repeaters found.")
         except Exception as e:
             logger.error(f"Error in xlist command: {e}")
-            await ctx.respond("Error retrieving removed list.")
+            await ctx.respond("Error retrieving removed list.", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 async def get_user_display_name_from_member(ctx: lightbulb.Context, user_id: int | None, username: str) -> str:
@@ -2084,7 +3370,7 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
 
                                 if prefix and name:
                                     # Use stored display name (was saved during reservation)
-                                    display_name = node.get('username', 'Unknown')
+                                    display_name = node.get('display_name', 'Unknown')
 
                                     line = f"{RESERVED} {prefix}: {name} (reserved by {display_name})"
                                     lines.append(line)
@@ -2093,11 +3379,11 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                                 continue
                 except json.JSONDecodeError as e:
                     logger.error(f"Error parsing reserved nodes file {reserved_nodes_file}: {e}")
-                    await ctx.respond("Error: Invalid JSON in reserved nodes file.")
+                    await ctx.respond("Error: Invalid JSON in reserved nodes file.", flags=hikari.MessageFlag.EPHEMERAL)
                     return
                 except Exception as e:
                     logger.error(f"Error reading reserved nodes file {reserved_nodes_file}: {e}")
-                    await ctx.respond("Error reading reserved nodes file.")
+                    await ctx.respond("Error reading reserved nodes file.", flags=hikari.MessageFlag.EPHEMERAL)
                     return
 
             lines.sort(key=extract_prefix_for_sort)
@@ -2110,7 +3396,7 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                 await ctx.respond("No reserved nodes found.")
         except Exception as e:
             logger.error(f"Error in rlist command: {e}")
-            await ctx.respond("Error retrieving reserved list.")
+            await ctx.respond("Error retrieving reserved list.", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -2185,6 +3471,77 @@ class KeygenCommand(lightbulb.SlashCommand, name="keygen",
 
 
 @client.register()
+class PurgeOldMessagesCommand(lightbulb.SlashCommand, name="purge",
+    description="Delete old messages from a channel (uses configured purge_days)",
+    default_member_permissions=hikari.Permissions.MANAGE_MESSAGES):
+
+    channel = lightbulb.channel('channel', 'Channel to purge messages from (defaults to current channel)')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Delete old messages from a channel (uses purge_days from config, default: 4 days)"""
+        try:
+            # Determine which channel to purge
+            target_channel_id = self.channel.id if self.channel else ctx.channel_id
+            target_channel = await bot.rest.fetch_channel(target_channel_id)
+
+            # Check if channel is a text channel, news channel, or forum channel
+            if not isinstance(target_channel, (hikari.GuildTextChannel, hikari.GuildNewsChannel, hikari.GuildForumChannel)):
+                await ctx.respond(f"{CROSS} This command can only be used in text, news, or forum channels.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Check permissions - need MANAGE_MESSAGES permission
+            if not ctx.member:
+                await ctx.respond(f"{CROSS} Unable to verify permissions.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Get guild to check permissions
+            if not target_channel.guild_id:
+                await ctx.respond(f"{CROSS} This command can only be used in guild channels.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Check if user has MANAGE_MESSAGES permission
+            permissions = ctx.member.get_permissions()
+            if not (permissions & hikari.Permissions.MANAGE_MESSAGES):
+                await ctx.respond(f"{CROSS} You need the MANAGE_MESSAGES permission to use this command.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Get purge days from config for the message
+            try:
+                purge_days = int(config.get("discord", "purge_days", fallback="4"))
+            except (ValueError, TypeError):
+                purge_days = 4
+
+            # Send initial response
+            await ctx.respond(f"{WARN} Starting to purge messages older than {purge_days} days from <#{target_channel_id}>... This may take a while.", flags=hikari.MessageFlag.EPHEMERAL)
+
+            # Use the shared purge function
+            deleted_count, failed_count = await purge_old_messages_from_channel(target_channel_id)
+
+            # Send completion message
+            result_message = f"{CHECK} Purge complete! Deleted {deleted_count} message(s)"
+            if failed_count > 0:
+                result_message += f", {failed_count} message(s) could not be deleted"
+            result_message += "."
+
+            try:
+                await ctx.interaction.edit_initial_response(result_message)
+            except Exception as e:
+                logger.error(f"Error editing initial response: {e}")
+                # Try to send a follow-up message instead
+                await ctx.respond(result_message, flags=hikari.MessageFlag.EPHEMERAL)
+
+        except Exception as e:
+            logger.error(f"Error in purge command: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            try:
+                await ctx.interaction.edit_initial_response(f"{CROSS} Error purging messages: {str(e)}")
+            except Exception:
+                await ctx.respond(f"{CROSS} Error purging messages: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
 class HelpCommand(lightbulb.SlashCommand, name="help",
     description="Show all available commands", hooks=[category_check]):
 
@@ -2194,26 +3551,614 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
         try:
             help_message = """**Available Bot Commands:**
 
-`/list`* - Get list of active repeaters
+`/list` - Get list of active repeaters
 `/offline` - Get list of offline repeaters (>3 days no advert)
-`/dupes`* - Get list of duplicate repeater prefixes
-`/open`* - Get list of unused hex keys
-`/prefix <hex>`* - Check if a hex prefix is available
+`/dupes` - Get list of duplicate repeater prefixes
+`/open` - Get list of unused hex keys
+`/prefix <hex>` - Check if a hex prefix is available
 `/rlist` - Get list of reserved repeaters
-`/stats <hex>`* - Get detailed stats of a repeater by hex prefix
+`/stats <hex>` - Get detailed stats of a repeater by hex prefix
 `/qr <hex>` - Generate a QR code for adding a contact
 `/reserve <prefix> <name>` - Reserve a hex prefix for a repeater
 `/release <prefix>` - Release a hex prefix from the reserve list
 `/remove <hex>` - Remove a repeater from the repeater list
+`/own <hex>` - Claim ownership of a repeater
 `/keygen <prefix>` - Generate a MeshCore keypair with a specific prefix
 `/help` - Show this help message
-
-**Commands also accept an optional `days` parameter (default: 7 days)*"""
+"""
 
             await ctx.respond(help_message)
         except Exception as e:
             logger.error(f"Error in help command: {e}")
-            await ctx.respond("Error retrieving help information.")
+            await ctx.respond("Error retrieving help information.", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
+class SetupRolesCommand(lightbulb.SlashCommand, name="setup_roles",
+    description="Set up a reaction roles message (admin only)",
+    default_member_permissions=hikari.Permissions.MANAGE_MESSAGES):
+
+    channel = lightbulb.channel('channel', 'Channel to post the roles message in')
+    message = lightbulb.string('message', 'Message content for the roles message')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Set up a reaction roles message"""
+        try:
+            # Check if user is bot owner
+            bot_owner_id = None
+            try:
+                owner_id_str = config.get("discord", "bot_owner_id", fallback=None)
+                if owner_id_str:
+                    bot_owner_id = int(owner_id_str)
+            except (ValueError, TypeError):
+                pass
+
+            if not ctx.member or not bot_owner_id or ctx.member.user.id != bot_owner_id:
+                await ctx.respond(f"{CROSS} Only the bot owner can use this command.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Determine channel - check config first, then parameter, then current channel
+            target_channel_id = None
+
+            # Check config for role_channel_id
+            role_channel_id_str = config.get("discord", "role_channel_id", fallback=None)
+            if role_channel_id_str:
+                try:
+                    target_channel_id = int(role_channel_id_str)
+                except (ValueError, TypeError):
+                    pass
+
+            # Override with parameter if provided
+            if self.channel:
+                target_channel_id = self.channel.id
+
+            # Fall back to current channel if nothing else
+            if not target_channel_id:
+                target_channel_id = ctx.channel_id
+
+            target_channel = await bot.rest.fetch_channel(target_channel_id)
+
+            if not isinstance(target_channel, hikari.GuildTextChannel):
+                await ctx.respond(f"{CROSS} This command can only be used in text channels.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Default message if not provided
+            roles_message = self.message if self.message else "**React to get roles:**\n\nReact with the emoji below to get the corresponding role!"
+
+            # Send the message
+            sent_message = await bot.rest.create_message(target_channel_id, roles_message)
+
+            # Store the message ID in config or a file for tracking
+            # For now, we'll use a simple approach - store in a JSON file
+            roles_file = "reaction_roles.json"
+            if os.path.exists(roles_file):
+                try:
+                    with open(roles_file, 'r') as f:
+                        roles_data = json.load(f)
+                except:
+                    roles_data = {"messages": []}
+            else:
+                roles_data = {"messages": []}
+
+            # Add this message to the list
+            roles_data["messages"].append({
+                "message_id": str(sent_message.id),
+                "channel_id": str(target_channel_id),
+                "guild_id": str(target_channel.guild_id) if target_channel.guild_id else None
+            })
+
+            with open(roles_file, 'w') as f:
+                json.dump(roles_data, f, indent=2)
+
+            await ctx.respond(
+                f"{CHECK} Roles message created in <#{target_channel_id}>!\n"
+                f"Message ID: {sent_message.id}\n\n"
+                f"**Next steps:**\n"
+                f"1. Use `/add_role_reaction` to add emoji-role mappings to this message\n"
+                f"2. Users can then react to get roles automatically",
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        except Exception as e:
+            logger.error(f"Error in setup_roles command: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            await ctx.respond(f"{CROSS} Error setting up roles message: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
+class AddRoleReactionCommand(lightbulb.SlashCommand, name="add_role_reaction",
+    description="Add an emoji-role mapping to a roles message (admin only)",
+    default_member_permissions=hikari.Permissions.MANAGE_MESSAGES):
+
+    message_id = lightbulb.string('message_id', 'The message ID to add reactions to')
+    emoji = lightbulb.string('emoji', 'The emoji to use (e.g., ✅ or :checkmark:)')
+    role = lightbulb.role('role', 'The role to assign when this emoji is reacted')
+    description = lightbulb.string('description', 'Description of what this role is for')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Add an emoji-role mapping to a roles message"""
+        try:
+            # Check if user is bot owner
+            bot_owner_id = None
+            try:
+                owner_id_str = config.get("discord", "bot_owner_id", fallback=None)
+                if owner_id_str:
+                    bot_owner_id = int(owner_id_str)
+            except (ValueError, TypeError):
+                pass
+
+            if not ctx.member or not bot_owner_id or ctx.member.user.id != bot_owner_id:
+                await ctx.respond(f"{CROSS} Only the bot owner can use this command.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            message_id = int(self.message_id)
+            role_id = self.role.id
+            emoji_str = self.emoji.strip()
+            description = self.description.strip()
+
+            # Try to find the message
+            roles_file = "reaction_roles.json"
+            if not os.path.exists(roles_file):
+                await ctx.respond(f"{CROSS} No roles messages found. Use `/setup_roles` first.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            with open(roles_file, 'r') as f:
+                roles_data = json.load(f)
+
+            # Find the message
+            message_info = None
+            for msg in roles_data.get("messages", []):
+                if str(msg.get("message_id")) == str(message_id):
+                    message_info = msg
+                    break
+
+            if not message_info:
+                await ctx.respond(f"{CROSS} Message ID not found in roles messages.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            channel_id = int(message_info["channel_id"])
+
+            # Add reaction to the message
+            try:
+                # Hikari's REST API accepts emoji as:
+                # - Unicode emoji string (e.g., "✅")
+                # - Custom emoji string format (e.g., "<:name:id>" or "<a:name:id>")
+                # - Or we can fetch the emoji from the guild
+
+                # Hikari's REST API accepts emoji as:
+                # - Unicode emoji string (e.g., "✅")
+                # - Custom emoji in format "name:id" (NOT "<:name:id>")
+                # - Or fetch the emoji object from the guild
+
+                emoji_obj = None
+                is_animated = False
+
+                # Try to parse as custom emoji first (Discord format: <:name:id> or <a:name:id>)
+                if emoji_str.startswith('<') and emoji_str.endswith('>'):
+                    # Custom emoji format: <:name:id> or <a:name:id>
+                    parts = emoji_str[1:-1].split(':')
+                    if len(parts) == 3:
+                        is_animated = parts[0] == 'a'
+                        emoji_name = parts[1]
+                        emoji_id = parts[2]
+                        # Hikari expects "name:id" format (without angle brackets)
+                        emoji_obj = f"{emoji_name}:{emoji_id}"
+                    else:
+                        await ctx.respond(f"{CROSS} Invalid emoji format. Use a standard emoji (✅) or custom emoji format (<:name:id> or <a:name:id>).", flags=hikari.MessageFlag.EPHEMERAL)
+                        return
+                elif emoji_str.startswith(':') and emoji_str.endswith(':'):
+                    # Emoji name format: :emoji_name: - try to find it in the guild
+                    emoji_name = emoji_str[1:-1]  # Remove colons
+                    try:
+                        # Try to find the emoji in the guild
+                        channel = await bot.rest.fetch_channel(channel_id)
+                        if channel.guild_id:
+                            guild = await bot.rest.fetch_guild(channel.guild_id)
+                            # Search for emoji by name
+                            for emoji in guild.get_emojis() or []:
+                                if emoji.name == emoji_name:
+                                    # Found guild emoji - use "name:id" format
+                                    emoji_obj = f"{emoji.name}:{emoji.id}"
+                                    is_animated = emoji.is_animated
+                                    break
+
+                        if not emoji_obj:
+                            await ctx.respond(f"{CROSS} Emoji ':{emoji_name}:' not found in this guild.", flags=hikari.MessageFlag.EPHEMERAL)
+                            return
+                    except Exception as e:
+                        logger.error(f"Error searching for guild emoji: {e}")
+                        await ctx.respond(f"{CROSS} Error searching for emoji: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+                        return
+                else:
+                    # Unicode emoji - use as-is
+                    emoji_obj = emoji_str
+
+                if not emoji_obj:
+                    await ctx.respond(f"{CROSS} Could not determine emoji format.", flags=hikari.MessageFlag.EPHEMERAL)
+                    return
+
+                await bot.rest.add_reaction(channel_id, message_id, emoji_obj)
+            except Exception as e:
+                logger.error(f"Error adding reaction: {e}")
+                await ctx.respond(f"{CROSS} Error adding reaction to message: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Store the mapping
+            if "mappings" not in roles_data:
+                roles_data["mappings"] = []
+
+            # Check if mapping already exists
+            mapping_key = f"{message_id}:{emoji_str}"
+            existing = False
+            for mapping in roles_data["mappings"]:
+                if mapping.get("message_id") == str(message_id) and mapping.get("emoji") == emoji_str:
+                    mapping["role_id"] = str(role_id)
+                    existing = True
+                    break
+
+            if not existing:
+                roles_data["mappings"].append({
+                    "message_id": str(message_id),
+                    "emoji": emoji_str,
+                    "role_id": str(role_id),
+                    "guild_id": message_info.get("guild_id")
+                })
+
+            with open(roles_file, 'w') as f:
+                json.dump(roles_data, f, indent=2)
+
+            # Append "emoji - description" to the message
+            try:
+                current_message = await bot.rest.fetch_message(channel_id, message_id)
+                current_content = current_message.content or ""
+
+                # Append the new line
+                new_line = f"{emoji_str} - {description}"
+                updated_content = current_content
+                if updated_content:
+                    updated_content += "\n" + new_line
+                else:
+                    updated_content = new_line
+
+                # Edit the message
+                await bot.rest.edit_message(channel_id, message_id, updated_content)
+            except Exception as e:
+                logger.error(f"Error updating message content: {e}")
+                # Don't fail the command if message update fails, just log it
+
+            await ctx.respond(
+                f"{CHECK} Added role reaction!\n"
+                f"Emoji: {emoji_str}\n"
+                f"Role: <@&{role_id}>\n"
+                f"Description: {description}\n"
+                f"Users can now react to get this role automatically.",
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        except Exception as e:
+            logger.error(f"Error in add_role_reaction command: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            await ctx.respond(f"{CROSS} Error adding role reaction: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
+class RemoveRoleReactionCommand(lightbulb.SlashCommand, name="remove_role_reaction",
+    description="Remove an emoji-role mapping from a roles message (admin only)",
+    default_member_permissions=hikari.Permissions.MANAGE_MESSAGES):
+
+    message_id = lightbulb.string('message_id', 'The message ID to remove reactions from')
+    emoji = lightbulb.string('emoji', 'The emoji to remove (e.g., ✅ or :checkmark:)')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Remove an emoji-role mapping from a roles message"""
+        try:
+            # Check if user is bot owner
+            bot_owner_id = None
+            try:
+                owner_id_str = config.get("discord", "bot_owner_id", fallback=None)
+                if owner_id_str:
+                    bot_owner_id = int(owner_id_str)
+            except (ValueError, TypeError):
+                pass
+
+            if not ctx.member or not bot_owner_id or ctx.member.user.id != bot_owner_id:
+                await ctx.respond(f"{CROSS} Only the bot owner can use this command.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            message_id = int(self.message_id)
+            emoji_str = self.emoji.strip()
+
+            # Try to find the message
+            roles_file = "reaction_roles.json"
+            if not os.path.exists(roles_file):
+                await ctx.respond(f"{CROSS} No roles messages found. Use `/setup_roles` first.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            with open(roles_file, 'r') as f:
+                roles_data = json.load(f)
+
+            # Find the message
+            message_info = None
+            for msg in roles_data.get("messages", []):
+                if str(msg.get("message_id")) == str(message_id):
+                    message_info = msg
+                    break
+
+            if not message_info:
+                await ctx.respond(f"{CROSS} Message ID not found in roles messages.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            channel_id = int(message_info["channel_id"])
+
+            # Find and remove the mapping
+            mappings = roles_data.get("mappings", [])
+            mapping_to_remove = None
+            for mapping in mappings:
+                if mapping.get("message_id") == str(message_id) and mapping.get("emoji") == emoji_str:
+                    mapping_to_remove = mapping
+                    break
+
+            if not mapping_to_remove:
+                await ctx.respond(f"{CROSS} No mapping found for this emoji on this message.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            role_id = mapping_to_remove.get("role_id")
+
+            # Remove the mapping from the list
+            roles_data["mappings"] = [m for m in mappings if m != mapping_to_remove]
+
+            # Save the updated data
+            with open(roles_file, 'w') as f:
+                json.dump(roles_data, f, indent=2)
+
+            # Remove the reaction from the message
+            try:
+                # Parse emoji for removal
+                emoji_obj = None
+                if emoji_str.startswith('<') and emoji_str.endswith('>'):
+                    # Custom emoji format: <:name:id> or <a:name:id>
+                    parts = emoji_str[1:-1].split(':')
+                    if len(parts) == 3:
+                        emoji_name = parts[1]
+                        emoji_id = parts[2]
+                        emoji_obj = f"{emoji_name}:{emoji_id}"
+                elif emoji_str.startswith(':') and emoji_str.endswith(':'):
+                    # Emoji name format: :emoji_name: - try to find it in the guild
+                    emoji_name = emoji_str[1:-1]
+                    try:
+                        channel = await bot.rest.fetch_channel(channel_id)
+                        if channel.guild_id:
+                            guild = await bot.rest.fetch_guild(channel.guild_id)
+                            for emoji in guild.get_emojis() or []:
+                                if emoji.name == emoji_name:
+                                    emoji_obj = f"{emoji.name}:{emoji.id}"
+                                    break
+                    except Exception as e:
+                        logger.debug(f"Error searching for guild emoji: {e}")
+                else:
+                    # Unicode emoji
+                    emoji_obj = emoji_str
+
+                if emoji_obj:
+                    # Remove the bot's reaction (we can't remove all reactions, but we can remove ours)
+                    try:
+                        # Get bot's user ID - use bot.me if available, otherwise skip
+                        bot_user_id = None
+                        try:
+                            if hasattr(bot, 'me') and bot.me:
+                                bot_user_id = bot.me.id
+                        except:
+                            pass
+
+                        if bot_user_id:
+                            await bot.rest.delete_reaction(channel_id, message_id, emoji_obj, bot_user_id)
+                    except Exception as e:
+                        logger.debug(f"Error removing bot reaction: {e}")
+            except Exception as e:
+                logger.error(f"Error removing reaction: {e}")
+
+            # Remove the line from the message content
+            try:
+                current_message = await bot.rest.fetch_message(channel_id, message_id)
+                current_content = current_message.content or ""
+
+                # Remove the line that contains this emoji and description
+                lines = current_content.split('\n')
+                updated_lines = []
+                for line in lines:
+                    # Check if this line starts with the emoji (with optional whitespace)
+                    line_stripped = line.strip()
+                    if not line_stripped.startswith(emoji_str):
+                        updated_lines.append(line)
+
+                updated_content = '\n'.join(updated_lines).strip()
+
+                # Edit the message
+                if updated_content != current_content:
+                    await bot.rest.edit_message(channel_id, message_id, updated_content)
+            except Exception as e:
+                logger.error(f"Error updating message content: {e}")
+                # Don't fail the command if message update fails, just log it
+
+            await ctx.respond(
+                f"{CHECK} Removed role reaction!\n"
+                f"Emoji: {emoji_str}\n"
+                f"Role: <@&{role_id}>\n"
+                f"The mapping has been removed and users will no longer get this role from reactions.",
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        except Exception as e:
+            logger.error(f"Error in remove_role_reaction command: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            await ctx.respond(f"{CROSS} Error removing role reaction: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@bot.listen()
+async def on_reaction_add(event: hikari.GuildReactionAddEvent):
+    """Handle reaction add events for role assignment"""
+    try:
+        # Ignore bot reactions
+        if event.member and event.member.is_bot:
+            return
+
+        # Load reaction roles mappings
+        roles_file = "reaction_roles.json"
+        if not os.path.exists(roles_file):
+            return
+
+        with open(roles_file, 'r') as f:
+            roles_data = json.load(f)
+
+        # Find mapping for this message and emoji
+        message_id = str(event.message_id)
+        emoji_str = None
+
+        # Handle emoji - could be UnicodeEmoji object or custom emoji
+        if event.emoji_id:
+            # Custom emoji
+            emoji_name = str(event.emoji_name) if event.emoji_name else ""
+            emoji_str = f"<:{emoji_name}:{event.emoji_id}>"
+        elif event.emoji_name:
+            # Unicode emoji - could be UnicodeEmoji object or string
+            emoji_str = str(event.emoji_name)
+
+        if not emoji_str:
+            return
+
+        mapping = None
+        for m in roles_data.get("mappings", []):
+            if m.get("message_id") == message_id:
+                # Compare emoji
+                mapping_emoji = m.get("emoji", "")
+                if mapping_emoji == emoji_str or mapping_emoji == event.emoji_name:
+                    mapping = m
+                    break
+
+        if not mapping:
+            return
+
+        # Assign the role
+        role_id = int(mapping["role_id"])
+        guild_id = event.guild_id
+
+        if not guild_id or not event.user_id:
+            return
+
+        try:
+            await bot.rest.add_role_to_member(guild_id, event.user_id, role_id)
+            logger.info(f"Assigned role {role_id} to user {event.user_id} via reaction")
+        except hikari.ForbiddenError:
+            logger.warning(f"Bot doesn't have permission to assign role {role_id}")
+        except Exception as e:
+            logger.error(f"Error assigning role via reaction: {e}")
+    except Exception as e:
+        logger.error(f"Error in reaction add handler: {e}")
+
+
+@bot.listen()
+async def on_reaction_remove(event: hikari.GuildReactionDeleteEvent):
+    """Handle reaction remove events for role removal"""
+    try:
+        # Load reaction roles mappings
+        roles_file = "reaction_roles.json"
+        if not os.path.exists(roles_file):
+            return
+
+        with open(roles_file, 'r') as f:
+            roles_data = json.load(f)
+
+        # Find mapping for this message and emoji
+        message_id = str(event.message_id)
+        emoji_str = None
+
+        # Handle emoji - could be UnicodeEmoji object or string
+        if event.emoji_id:
+            # Custom emoji
+            emoji_name = str(event.emoji_name) if event.emoji_name else ""
+            emoji_str = f"<:{emoji_name}:{event.emoji_id}>"
+        elif event.emoji_name:
+            # Unicode emoji - could be UnicodeEmoji object or string
+            emoji_str = str(event.emoji_name)
+
+        if not emoji_str:
+            return
+
+        mapping = None
+        for m in roles_data.get("mappings", []):
+            if m.get("message_id") == message_id:
+                # Compare emoji
+                mapping_emoji = m.get("emoji", "")
+                if mapping_emoji == emoji_str or mapping_emoji == str(event.emoji_name):
+                    mapping = m
+                    break
+
+        if not mapping:
+            return
+
+        # GuildReactionDeleteEvent doesn't have user_id, so we need to fetch the message
+        # and check who still has the reaction, then remove role from those who don't
+        guild_id = event.guild_id
+        channel_id = event.channel_id
+        role_id = int(mapping["role_id"])
+
+        if not guild_id or not channel_id:
+            return
+
+        try:
+            # Fetch the message to get current reactions
+            message = await bot.rest.fetch_message(channel_id, event.message_id)
+
+            # Find the reaction for this emoji
+            reaction = None
+            reaction_emoji = None
+            for r in message.reactions or []:
+                # Compare reactions
+                if event.emoji_id:
+                    # Custom emoji
+                    if r.emoji and r.emoji.id == event.emoji_id:
+                        reaction = r
+                        reaction_emoji = r.emoji
+                        break
+                elif event.emoji_name:
+                    # Unicode emoji
+                    if r.emoji and str(r.emoji) == str(event.emoji_name):
+                        reaction = r
+                        reaction_emoji = r.emoji
+                        break
+
+            # Get users who currently have the reaction
+            users_with_reaction = set()
+            if reaction and reaction_emoji:
+                try:
+                    async for user in bot.rest.fetch_reactions_for_emoji(channel_id, message_id, reaction_emoji):
+                        users_with_reaction.add(user.id)
+                except Exception as e:
+                    logger.debug(f"Error fetching reaction users: {e}")
+
+            # Get all members with the role
+            try:
+                guild = await bot.rest.fetch_guild(guild_id)
+                async for member in bot.rest.fetch_members(guild_id):
+                    # Check if member has the role but doesn't have the reaction
+                    if role_id in member.role_ids and member.id not in users_with_reaction:
+                        # Member has role but no longer has reaction - remove role
+                        try:
+                            await bot.rest.remove_role_from_member(guild_id, member.id, role_id)
+                            logger.info(f"Removed role {role_id} from user {member.id} via reaction removal")
+                        except Exception as e:
+                            logger.debug(f"Error removing role from {member.id}: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching guild members: {e}")
+
+        except Exception as e:
+            logger.error(f"Error handling reaction removal: {e}")
+    except Exception as e:
+        logger.error(f"Error in reaction remove handler: {e}")
+
 
 if __name__ == "__main__":
     bot.run()

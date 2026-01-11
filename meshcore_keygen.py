@@ -53,6 +53,16 @@ Usage:
 import os
 import time
 import multiprocessing as mp
+# Set multiprocessing start method to 'spawn' to avoid fork() issues in multi-threaded environments
+# This must be done before any multiprocessing code is used (e.g., ProcessPoolExecutor)
+# When imported as a module from a multi-threaded context (like hikari_bot), this prevents
+# the deprecation warning about using fork() in multi-threaded processes
+try:
+    mp.set_start_method('spawn', force=False)
+except RuntimeError:
+    # Start method already set by another module or main(), which is fine
+    # If it was set to 'fork', the main() function will override it with force=True
+    pass
 import platform
 import subprocess
 import argparse
