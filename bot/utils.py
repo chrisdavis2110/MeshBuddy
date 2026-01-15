@@ -190,11 +190,24 @@ async def get_extract_device_types_for_context(ctx, device_types=None, days=14):
 async def get_unused_keys_for_context(ctx, days=14):
     """Get unused keys based on the category where the command was invoked"""
     data = await get_nodes_data_for_context(ctx)
-    from helpers.device_utils import extract_device_types
-    devices = extract_device_types(data=data, device_types=['repeaters'], days=days)
-    if devices is None:
+    if data is None:
         return None
-    repeaters = devices.get('repeaters', [])
+
+    # Load all repeaters (not filtered by days) to include future timestamps
+    contacts = data.get("data", []) if isinstance(data, dict) else data
+    if not isinstance(contacts, list):
+        return None
+
+    # Filter to repeaters only and normalize field names
+    repeaters = []
+    for contact in contacts:
+        if not isinstance(contact, dict):
+            continue
+        # Normalize field names (normalize_node is defined later in this file)
+        normalize_node(contact)
+        # Only include repeaters (device_role == 2)
+        if contact.get('device_role') == 2:
+            repeaters.append(contact)
     # Load removed nodes to exclude them (category-specific)
     removed_set = set()
     category_id = await get_category_id_from_context(ctx)

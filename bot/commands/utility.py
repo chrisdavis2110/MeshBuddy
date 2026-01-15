@@ -5,27 +5,20 @@ General utility commands:
 - qr: Generate a QR code for adding a contact
 - keygen: Generate a MeshCore keypair with a specific prefix
 - help: Show all available commands
-- xlist: Get list of removed repeaters
-- rlist: Get list of reserved repeaters
 """
 
-import json
-import os
 from datetime import datetime
 import asyncio
 import hikari
 import lightbulb
 from concurrent.futures import ThreadPoolExecutor
-from bot.core import client, logger, CHECK, CROSS, RESERVED, category_check, EMOJIS, pending_qr_selections
+from bot.core import client, logger, CROSS, category_check, EMOJIS, pending_qr_selections
 from bot.utils import (
     get_repeater_for_context,
     get_removed_nodes_file_for_context,
-    get_reserved_nodes_file_for_context,
     is_node_removed,
-    extract_prefix_for_sort
 )
 from bot.helpers import generate_and_send_qr
-from bot.tasks import send_long_message
 
 
 @client.register()
@@ -139,95 +132,6 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
 
 
 @client.register()
-class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
-    description="Get list of removed repeaters"):
-
-    @lightbulb.invoke
-    async def invoke(self, ctx: lightbulb.Context):
-        """Get list of removed repeaters"""
-        try:
-            lines = []
-
-            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
-            if os.path.exists(removed_nodes_file):
-                try:
-                    with open(removed_nodes_file, 'r') as f:
-                        removed_data = json.load(f)
-                        for node in removed_data.get('data', []):
-                            public_key = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
-                            name = node.get('name', 'Unknown')
-                            if public_key and name and node.get('device_role') == 2:
-                                lines.append(f"{CROSS} {public_key}: {name}")
-                except Exception as e:
-                    logger.debug(f"Error reading removedNodes.json: {e}")
-
-            lines.sort(key=extract_prefix_for_sort)
-
-            if lines:
-                header = "Removed Repeaters:"
-                footer = f"Total Repeaters: {len(lines)}"
-                await send_long_message(ctx, header, lines, footer)
-            else:
-                await ctx.respond("No repeaters found.")
-        except Exception as e:
-            logger.error(f"Error in xlist command: {e}")
-            await ctx.respond("Error retrieving removed list.", flags=hikari.MessageFlag.EPHEMERAL)
-
-
-@client.register()
-class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
-    description="Get list of reserved repeaters"):
-
-    @lightbulb.invoke
-    async def invoke(self, ctx: lightbulb.Context):
-        """Get list of reserved repeaters"""
-        try:
-            lines = []
-
-            reserved_nodes_file = await get_reserved_nodes_file_for_context(ctx)
-
-            if os.path.exists(reserved_nodes_file):
-                try:
-                    with open(reserved_nodes_file, 'r') as f:
-                        reserved_data = json.load(f)
-
-                        for node in reserved_data.get('data', []):
-                            try:
-                                prefix = node.get('prefix', '').upper() if node.get('prefix') else ''
-                                name = node.get('name', 'Unknown')
-
-                                if prefix and name:
-                                    # Use stored display name (was saved during reservation)
-                                    display_name = node.get('display_name', 'Unknown')
-
-                                    line = f"{RESERVED} {prefix}: {name} (reserved by {display_name})"
-                                    lines.append(line)
-                            except Exception:
-                                # Skip individual node errors
-                                continue
-                except json.JSONDecodeError as e:
-                    logger.error(f"Error parsing reserved nodes file {reserved_nodes_file}: {e}")
-                    await ctx.respond("Error: Invalid JSON in reserved nodes file.", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
-                except Exception as e:
-                    logger.error(f"Error reading reserved nodes file {reserved_nodes_file}: {e}")
-                    await ctx.respond("Error reading reserved nodes file.", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
-
-            lines.sort(key=extract_prefix_for_sort)
-
-            if lines:
-                header = "Reserved Nodes:"
-                footer = f"Total Reserved: {len(lines)}"
-                await send_long_message(ctx, header, lines, footer)
-            else:
-                await ctx.respond("No reserved nodes found.")
-        except Exception as e:
-            logger.error(f"Error in rlist command: {e}")
-            await ctx.respond("Error retrieving reserved list.", flags=hikari.MessageFlag.EPHEMERAL)
-
-
-@client.register()
 class KeygenCommand(lightbulb.SlashCommand, name="keygen",
     description="Generate a MeshCore keypair with a specific prefix", hooks=[category_check]):
 
@@ -319,7 +223,8 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/reserve <prefix> <name>` - Reserve a hex prefix for a repeater
 `/release <prefix>` - Release a hex prefix from the reserve list
 `/remove <hex>` - Remove a repeater from the repeater list
-`/own <hex>` - Claim ownership of a repeater
+`/claim <hex>` - Claim ownership of a repeater
+`/unclaim <hex>` - Unclaim ownership of a repeater (owner or bot owner only)
 `/keygen <prefix>` - Generate a MeshCore keypair with a specific prefix
 `/help` - Show this help message
 """

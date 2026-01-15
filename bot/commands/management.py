@@ -5,7 +5,8 @@ Commands for managing repeater reservations and ownership:
 - reserve: Reserve a hex prefix for a repeater
 - release: Release a hex prefix from the reserve list
 - remove: Remove a repeater from the repeater list
-- own: Claim ownership of a repeater
+- claim: Claim ownership of a repeater
+- unclaim: Unclaim ownership of a repeater (owner or bot owner only)
 - owner: Look up the owner of a repeater
 """
 
@@ -14,7 +15,7 @@ import os
 from datetime import datetime
 import hikari
 import lightbulb
-from bot.core import client, config, logger, CHECK, CROSS, WARN, EMOJIS, category_check, pending_remove_selections, pending_own_selections, pending_owner_selections
+from bot.core import client, config, logger, CHECK, CROSS, EMOJIS, category_check, pending_remove_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections
 from bot.utils import (
     get_nodes_data_for_context,
     get_repeater_for_context,
@@ -28,6 +29,7 @@ from bot.utils import (
 from bot.helpers import (
     process_repeater_ownership,
     process_repeater_removal,
+    process_repeater_unclaim,
     get_owner_info_for_repeater,
     get_user_display_name_from_member
 )
@@ -106,8 +108,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
                 existing_name = existing_node.get('name', 'Unknown')
                 existing_display_name = existing_node.get('display_name', existing_node.get('username', 'Unknown'))
                 await ctx.respond(
-                    f"{CROSS} {hex_prefix} with name: **{existing_name}** has already been reserved by **{existing_display_name}**\n",
-                    f"*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
+                    f"{CROSS} {hex_prefix} with name: **{existing_name}** has already been reserved by **{existing_display_name}**\n*You can only reserve prefixes from the unused keys list. Use `/open` to see available prefixes.*"
                 )
                 return
             # Get username and user_id from context
@@ -214,12 +215,10 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
                 return
 
             # Find the entry to remove
-            initial_count = len(reserved_data['data'])
             reserved_data['data'] = [
                 node for node in reserved_data['data']
                 if node.get('prefix', '').upper() != hex_prefix
             ]
-            removed_count = initial_count - len(reserved_data['data'])
 
             # Update timestamp
             reserved_data['timestamp'] = datetime.now().isoformat()
@@ -360,7 +359,7 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
 
 
 @client.register()
-class OwnRepeaterCommand(lightbulb.SlashCommand, name="own",
+class ClaimRepeaterCommand(lightbulb.SlashCommand, name="claim",
     description="Claim ownership of a repeater", hooks=[category_check]):
 
     text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
@@ -475,8 +474,128 @@ class OwnRepeaterCommand(lightbulb.SlashCommand, name="own",
             # Process the ownership claim (for single repeater case)
             await process_repeater_ownership(selected_repeater, ctx)
         except Exception as e:
-            logger.error(f"Error in own command: {e}")
+            logger.error(f"Error in claim command: {e}")
             await ctx.respond(f"Error claiming repeater: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
+class UnclaimRepeaterCommand(lightbulb.SlashCommand, name="unclaim",
+    description="Unclaim ownership of a repeater (owner or bot owner only)", hooks=[category_check]):
+
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Unclaim ownership of a repeater"""
+        try:
+            hex_prefix = self.text.upper().strip()
+
+            # Validate hex format
+            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Load nodes.json (category-specific)
+            nodes_data = await get_nodes_data_for_context(ctx)
+            if nodes_data is None:
+                await ctx.respond("Error: nodes data not found", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Find all repeaters with matching prefix (device_role == 2)
+            nodes_list = nodes_data.get('data', [])
+            matching_repeaters = []
+
+            for node in nodes_list:
+                # Normalize field names
+                normalize_node(node)
+                node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
+                # Only consider repeaters (device_role == 2)
+                if node_prefix == hex_prefix and node.get('device_role') == 2:
+                    # Check if already removed
+                    removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                    if not is_node_removed(node, removed_nodes_file):
+                        matching_repeaters.append(node)
+
+            if not matching_repeaters:
+                await ctx.respond(f"{CROSS} No repeater found with hex prefix {hex_prefix}", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # If multiple repeaters found, show select menu
+            if len(matching_repeaters) > 1:
+                # Create select menu options
+                options = []
+                for i, repeater in enumerate(matching_repeaters):
+                    name = repeater.get('name', 'Unknown')
+                    last_seen = repeater.get('last_seen', 'Unknown')
+
+                    # Format last_seen for display
+                    formatted_last_seen = "Unknown"
+                    if last_seen != 'Unknown':
+                        try:
+                            last_seen_dt = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
+                            days_ago = (datetime.now(last_seen_dt.tzinfo) - last_seen_dt).days
+                            formatted_last_seen = f"{days_ago} days ago"
+                        except Exception:
+                            formatted_last_seen = "Invalid timestamp"
+
+                    # Create option label (Discord limit: 100 chars)
+                    label = f"{name[:50]}"  # Truncate name if too long
+                    description = f"Last seen: {formatted_last_seen}"[:100]
+
+                    # Use index as value
+                    options.append(
+                        hikari.SelectMenuOption(
+                            label=label,
+                            description=description,
+                            value=str(i),
+                            emoji=EMOJIS[i],
+                            is_default=False
+                        )
+                    )
+
+                # Create custom ID for this selection
+                custom_id = f"unclaim_select_{hex_prefix}_{ctx.interaction.id}"
+
+                # Store the matching repeaters for later retrieval
+                pending_unclaim_selections[custom_id] = matching_repeaters
+
+                # Create select menu using hikari's builder
+                action_row_builder = hikari.impl.MessageActionRowBuilder()
+
+                # add_text_menu returns a TextSelectMenuBuilder
+                select_menu_builder = action_row_builder.add_text_menu(
+                    custom_id,  # custom_id must be positional
+                    placeholder="Select a repeater to unclaim",
+                    min_values=1,
+                    max_values=1
+                )
+
+                for option in options:
+                    select_menu_builder.add_option(
+                        option.label,  # label must be positional
+                        option.value,  # value must be positional
+                        description=option.description,
+                        emoji=option.emoji,
+                        is_default=option.is_default
+                    )
+
+                await ctx.respond(
+                    f"Found {len(matching_repeaters)} repeater(s) with prefix {hex_prefix}. Please select one:",
+                    components=[action_row_builder],
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+
+                # Return early - the component listener will handle the selection
+                return
+            else:
+                # Only one repeater found, use it directly
+                selected_repeater = matching_repeaters[0]
+
+            # Process the ownership unclaim (for single repeater case)
+            await process_repeater_unclaim(selected_repeater, ctx)
+        except Exception as e:
+            logger.error(f"Error in unclaim command: {e}")
+            await ctx.respond(f"Error unclaiming repeater: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()

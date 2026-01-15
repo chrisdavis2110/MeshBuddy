@@ -597,6 +597,175 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
             await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
 
 
+async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
+    """Process the unclaiming of a repeater and remove from repeaterOwners.json (category-specific)"""
+    try:
+        # Get user ID from context/interaction
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            user_id = ctx_or_interaction.user.id if ctx_or_interaction.user else None
+        elif isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            user_id = ctx_or_interaction.user.id if ctx_or_interaction.user else None
+        else:
+            user_id = None
+
+        if not user_id:
+            error_message = f"{CROSS} Unable to identify user"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_message,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Check if user can unclaim this repeater (owner or bot owner)
+        can_unclaim, reason = await can_user_remove_repeater(selected_repeater, user_id, ctx_or_interaction)
+        if not can_unclaim:
+            error_message = f"{CROSS} {reason}"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_message,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Get category-specific owner file
+        if isinstance(ctx_or_interaction, lightbulb.Context):
+            owner_file = await get_owner_file_for_context(ctx_or_interaction)
+        elif isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            try:
+                channel = await bot.rest.fetch_channel(ctx_or_interaction.channel_id)
+                category_id = channel.parent_id
+                owner_file = get_owner_file_for_category(category_id)
+            except Exception:
+                owner_file = "repeaterOwners.json"  # Fallback to default
+        else:
+            owner_file = "repeaterOwners.json"  # Fallback to default
+
+        public_key = selected_repeater.get('public_key', '')
+        if not public_key:
+            error_msg = f"{CROSS} Error: Repeater has no public key"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_msg,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(error_msg, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Load owner file
+        if not os.path.exists(owner_file):
+            error_msg = f"{CROSS} Repeater is not claimed"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_msg,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(error_msg, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        try:
+            with open(owner_file, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    owners_data = json.loads(content)
+                else:
+                    error_msg = f"{CROSS} Repeater is not claimed"
+                    if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                        await ctx_or_interaction.create_initial_response(
+                            hikari.ResponseType.MESSAGE_UPDATE,
+                            error_msg,
+                            components=None,
+                            flags=hikari.MessageFlag.EPHEMERAL
+                        )
+                    else:
+                        await ctx_or_interaction.respond(error_msg, flags=hikari.MessageFlag.EPHEMERAL)
+                    return
+        except json.JSONDecodeError:
+            error_msg = f"{CROSS} Error reading owner file"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_msg,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(error_msg, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Find and remove the owner entry
+        owner_removed = False
+        owners_list = owners_data.get('data', [])
+        for i, owner in enumerate(owners_list):
+            if owner.get('public_key', '').upper() == public_key.upper():
+                owners_list.pop(i)
+                owner_removed = True
+                break
+
+        if not owner_removed:
+            error_msg = f"{CROSS} Repeater is not claimed"
+            if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+                await ctx_or_interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    error_msg,
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+            else:
+                await ctx_or_interaction.respond(error_msg, flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Update timestamp and save
+        owners_data['timestamp'] = datetime.now().isoformat()
+        owners_data['data'] = owners_list
+
+        with open(owner_file, 'w') as f:
+            json.dump(owners_data, f, indent=2)
+
+        prefix = public_key[:2].upper() if public_key else '??'
+        name = selected_repeater.get('name', 'Unknown')
+        message = f"{CHECK} Successfully unclaimed repeater {prefix}: **{name}**"
+
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
+                message,
+                components=None,
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        else:
+            await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
+
+        logger.info(f"Unclaimed repeater {prefix}: {name} (public_key: {public_key[:10]}...)")
+
+    except Exception as e:
+        logger.error(f"Error processing repeater unclaim: {e}")
+        error_message = f"{CROSS} Error unclaiming repeater: {str(e)}"
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
+                error_message,
+                components=None,
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        else:
+            await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
+
+
 async def check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file="reservedNodes.json", owner_file="repeaterOwners.json"):
     """Check if a new repeater matches a reserved node and add to category-specific repeaterOwners file
 

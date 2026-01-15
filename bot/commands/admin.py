@@ -150,7 +150,7 @@ class SetupRolesCommand(lightbulb.SlashCommand, name="setup_roles",
                 try:
                     with open(roles_file, 'r') as f:
                         roles_data = json.load(f)
-                except:
+                except Exception:
                     roles_data = {"messages": []}
             else:
                 roles_data = {"messages": []}
@@ -271,6 +271,8 @@ class AddRoleReactionCommand(lightbulb.SlashCommand, name="add_role_reaction",
                                     # Found guild emoji - use "name:id" format
                                     emoji_obj = f"{emoji.name}:{emoji.id}"
                                     is_animated = emoji.is_animated
+                                    if is_animated:
+                                        emoji_obj = f"a:{emoji.name}:{emoji.id}"
                                     break
 
                         if not emoji_obj:
@@ -299,7 +301,6 @@ class AddRoleReactionCommand(lightbulb.SlashCommand, name="add_role_reaction",
                 roles_data["mappings"] = []
 
             # Check if mapping already exists
-            mapping_key = f"{message_id}:{emoji_str}"
             existing = False
             for mapping in roles_data["mappings"]:
                 if mapping.get("message_id") == str(message_id) and mapping.get("emoji") == emoji_str:
@@ -459,7 +460,7 @@ class RemoveRoleReactionCommand(lightbulb.SlashCommand, name="remove_role_reacti
                         try:
                             if hasattr(bot, 'me') and bot.me:
                                 bot_user_id = bot.me.id
-                        except:
+                        except Exception:
                             pass
 
                         if bot_user_id:

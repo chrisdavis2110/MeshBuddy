@@ -12,12 +12,13 @@ import os
 import asyncio
 import threading
 import hikari
-from bot.core import bot, config, logger, CROSS, pending_remove_selections, pending_qr_selections, pending_own_selections, pending_owner_selections
+from bot.core import bot, config, logger, CROSS, pending_remove_selections, pending_qr_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections
 from bot.utils import get_owner_file_for_category, get_server_emoji
 from bot.helpers import (
     generate_and_send_qr,
     process_repeater_ownership,
     process_repeater_removal,
+    process_repeater_unclaim,
     get_owner_info_for_repeater
 )
 from bot.tasks import (
@@ -151,6 +152,32 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
                 )
+                del pending_own_selections[custom_id]
+
+    # Check if this is an unclaim selection
+    elif custom_id and custom_id.startswith("unclaim_select_"):
+        # Extract the custom_id to get the matching repeaters
+        if custom_id in pending_unclaim_selections:
+            matching_repeaters = pending_unclaim_selections[custom_id]
+
+            # Get the selected index
+            if interaction.values and len(interaction.values) > 0:
+                selected_index = int(interaction.values[0])
+                selected_repeater = matching_repeaters[selected_index]
+
+                # Process the ownership unclaim
+                await process_repeater_unclaim(selected_repeater, interaction)
+
+                # Clean up the stored selection
+                del pending_unclaim_selections[custom_id]
+            else:
+                await interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    f"{CROSS} No selection made",
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+                del pending_unclaim_selections[custom_id]
 
     # Check if this is an owner lookup selection
     elif custom_id and custom_id.startswith("owner_select_"):
