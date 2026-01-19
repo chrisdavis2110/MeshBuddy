@@ -41,7 +41,8 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
                 await ctx_or_interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
                     error_msg,
-                    components=None
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
                 )
             else:
                 await ctx_or_interaction.respond(error_msg, flags=hikari.MessageFlag.EPHEMERAL)

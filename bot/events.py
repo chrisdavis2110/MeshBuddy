@@ -103,7 +103,8 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                 await interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
                     f"{CROSS} No selection made",
-                    components=None
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
                 )
 
     # Check if this is a QR code selection
@@ -126,7 +127,8 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                 await interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
                     f"{CROSS} No selection made",
-                    components=None
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
                 )
 
     # Check if this is an own/claim selection

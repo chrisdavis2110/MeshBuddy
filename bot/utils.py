@@ -29,6 +29,7 @@ async def get_category_id_from_context(ctx) -> int | None:
 
 # ============================================================================
 # File Path Helpers
+# ============================================================================
 
 def get_nodes_file_for_category(category_id: int | None) -> str:
     """Get the nodes file name based on category ID.
@@ -154,6 +155,7 @@ async def get_owner_file_for_context(ctx) -> str:
 
 # ============================================================================
 # Context Data Helpers
+# ============================================================================
 
 async def get_nodes_data_for_context(ctx):
     """Get nodes data based on the category where the command was invoked"""
@@ -258,6 +260,7 @@ async def get_unused_keys_for_context(ctx, days=14):
 
 # ============================================================================
 # Emoji Helpers
+# ============================================================================
 
 # Cache for server emojis
 server_emojis_cache = {}
@@ -422,6 +425,7 @@ async def get_server_emoji(channel_id: int, emoji_name: str) -> str:
 
 # ============================================================================
 # Node Utilities
+# ============================================================================
 
 def normalize_node(node):
     """Normalize node field names: handle both 'role'/'device_role' and 'last_heard'/'last_seen'"""
