@@ -72,7 +72,6 @@ def load_data_from_json(filename="nodes.json", data_dir=None):
         with open(filepath, 'r') as f:
             loaded_data = json.load(f)
 
-        print(f"Data loaded from {filepath}")
         return loaded_data
     except Exception as e:
         logger.error(f"Error loading data from JSON: {str(e)}")
@@ -85,8 +84,7 @@ def compare_data(new_data, old_data=None):
         print("No previous data to compare with")
         return {
             "new_contacts": new_data,
-            "duplicates": [],
-            "removed_contacts": []
+            "duplicates": []
         }
 
     old_contacts = old_data.get("data", [])
@@ -117,7 +115,6 @@ def compare_data(new_data, old_data=None):
     new_keys = set(new_key_name_pairs.keys())
 
     newly_added_keys = new_keys - old_keys
-    removed_keys = old_keys - new_keys
 
     # Find ALL duplicate keys (keys that appear multiple times, regardless of name) - REPEATERS ONLY
     # Count occurrences of each key in new data (repeaters only)
@@ -170,7 +167,6 @@ def compare_data(new_data, old_data=None):
     return {
         "new_contacts": new_contacts_list,
         "duplicates": duplicate_contacts,
-        "removed_contacts": list(removed_keys),
         "new_keys": list(newly_added_keys),
         "duplicate_keys": duplicate_keys
     }
