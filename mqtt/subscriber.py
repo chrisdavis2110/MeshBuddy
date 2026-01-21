@@ -71,11 +71,11 @@ class MQTTSubscriber:
 
         # Get API URL if available (used as backup if MQTT is not available)
         self.api_url = None
-        if self.config.has_option("meshcore", "mqtt_api"):
-            self.api_url = self.config.get("meshcore", "mqtt_api")
+        if self.config.has_option("api", "api_url"):
+            self.api_url = self.config.get("api", "api_url")
 
         # API polling interval (in seconds) - only used when MQTT is not available
-        self.api_poll_interval = self.config.getint("mqtt", "api_poll_interval", fallback=900)  # Default 15 minutes
+        self.api_poll_interval = self.config.getint("api", "api_poll_interval", fallback=900)  # Default 15 minutes
 
         # Initialize processors for each region
         for region, log_name in self.region_log_map.items():
