@@ -47,7 +47,7 @@ async def on_starting(event: hikari.StartingEvent):
     asyncio.create_task(periodic_node_watcher())
     asyncio.create_task(periodic_message_purge())
 
-    # Start MQTT subscriber in a background thread (it's blocking)
+    # Start MQTT subscriber or API polling based on config
     def start_mqtt_subscriber():
         """Start MQTT subscriber in a separate thread"""
         try:
@@ -57,17 +57,36 @@ async def on_starting(event: hikari.StartingEvent):
         except Exception as e:
             logger.error(f"Error starting MQTT subscriber: {e}")
 
-    # Check if MQTT is enabled in config
+    def start_api_polling():
+        """Start API polling in a separate thread"""
+        try:
+            from mqtt.subscriber import MQTTSubscriber
+            subscriber = MQTTSubscriber()
+            # Force API mode by disabling MQTT
+            subscriber.use_mqtt = False
+            subscriber.start_api_polling()
+        except Exception as e:
+            logger.error(f"Error starting API polling: {e}")
+
+    # Check which service is enabled
     try:
-        mqtt_enabled = config.getboolean("mqtt", "mqtt_enabled", fallback=True)
+        mqtt_enabled = config.getboolean("mqtt", "mqtt_enabled", fallback=False)
+        api_enabled = config.getboolean("api", "api_enabled", fallback=False)
+
         if mqtt_enabled:
+            # MQTT is enabled, start MQTT subscriber
             mqtt_thread = threading.Thread(target=start_mqtt_subscriber, daemon=True, name="MQTTSubscriber")
             mqtt_thread.start()
             logger.info("MQTT subscriber started in background thread")
+        elif api_enabled:
+            # API is enabled but MQTT is not, start API polling
+            api_thread = threading.Thread(target=start_api_polling, daemon=True, name="APIPolling")
+            api_thread.start()
+            logger.info("API polling started in background thread")
         else:
-            logger.info("MQTT subscriber disabled in config")
+            logger.info("Both MQTT and API are disabled in config - no data source will be used")
     except Exception as e:
-        logger.warning(f"Could not start MQTT subscriber: {e}")
+        logger.warning(f"Could not start data source: {e}")
 
 
 # ============================================================================

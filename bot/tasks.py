@@ -277,6 +277,20 @@ async def check_for_new_nodes():
 
                 if node.get('device_role') == 2:
                     message = f"## {emoji_new}  **NEW REPEATER ALERT**\n**{prefix}: {node_name}** has expanded our mesh!\nThank you for your service {emoji_salute}"
+
+                    # Add location link if node has location data
+                    location = node.get('location', {})
+                    if isinstance(location, dict):
+                        lat = location.get('latitude', 0)
+                        lon = location.get('longitude', 0)
+                        if lat != 0 and lon != 0:
+                            # Get meshmap URL from config
+                            meshmap_url = config.get("meshmap", "url", fallback=None)
+                            if meshmap_url:
+                                # Build URL with location query parameters
+                                location_link = f"{meshmap_url}?lat={lat}&long={lon}&zoom=10"
+                                message += f" [View on Map]({location_link})"
+
                     # Check if this repeater matches a reserved node and add to category-specific owner file
                     user_id = await check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file, owner_file)
 
