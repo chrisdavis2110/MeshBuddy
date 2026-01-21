@@ -221,7 +221,7 @@ async def initialize_emojis(channel_id: int = None):
     try:
         # Get channel ID from config if not provided
         if channel_id is None:
-            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
+            channel_id = config.get("discord", "bot_messenger_channel_id", fallback=None)
 
         if not channel_id:
             logger.warning("No channel_id available to initialize emojis")

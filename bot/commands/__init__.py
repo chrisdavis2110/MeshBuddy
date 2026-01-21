@@ -10,6 +10,5 @@ from . import lists
 from . import repeater
 from . import management
 from . import utility
-from . import admin
 
-__all__ = ['lists', 'repeater', 'management', 'utility', 'admin']
+__all__ = ['lists', 'repeater', 'management', 'utility']

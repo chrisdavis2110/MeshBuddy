@@ -11,6 +11,7 @@ import json
 import os
 import asyncio
 import threading
+from datetime import datetime
 import hikari
 from bot.core import bot, config, logger, CROSS, pending_remove_selections, pending_qr_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections
 from bot.utils import get_owner_file_for_channel, get_server_emoji
@@ -23,8 +24,7 @@ from bot.helpers import (
 )
 from bot.tasks import (
     periodic_channel_update,
-    periodic_node_watcher,
-    periodic_message_purge
+    periodic_node_watcher
 )
 
 
@@ -32,10 +32,39 @@ from bot.tasks import (
 # Bot Startup Event
 # ============================================================================
 
+def initialize_json_files():
+    """Initialize required JSON files if they don't exist"""
+    files_to_init = [
+        "nodes.json",
+        "reservedNodes.json",
+        "repeaterOwners.json",
+        "offReserved.json"
+    ]
+
+    for filename in files_to_init:
+        if not os.path.exists(filename):
+            try:
+                # Create empty structure with timestamp and empty data array
+                empty_data = {
+                    "timestamp": datetime.now().isoformat() + 'Z',
+                    "data": []
+                }
+
+                with open(filename, 'w') as f:
+                    json.dump(empty_data, f, indent=2)
+
+                logger.info(f"Initialized {filename}")
+            except Exception as e:
+                logger.error(f"Error initializing {filename}: {e}")
+
+
 @bot.listen()
 async def on_starting(event: hikari.StartingEvent):
     """Start periodic channel updates, node watcher, and MQTT subscriber when bot starts"""
     from bot.utils import initialize_emojis
+
+    # Initialize JSON files if they don't exist
+    initialize_json_files()
 
     # Initialize emojis after a short delay to ensure bot is ready
     async def init_emojis_delayed():

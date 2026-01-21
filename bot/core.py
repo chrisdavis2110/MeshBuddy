@@ -41,14 +41,13 @@ pending_own_selections = {}
 pending_unclaim_selections = {}
 pending_owner_selections = {}
 known_node_keys = set()
-purge_semaphore = asyncio.Semaphore(1)  # Ensure only one purge operation at a time
 
 # Command hooks
-@lightbulb.implements(lightbulb.SlashCommand)
-async def channel_check(ctx: lightbulb.Context) -> bool:
+@lightbulb.hook(lightbulb.ExecutionSteps.CHECKS, skip_when_failed=True)
+async def channel_check(pl: lightbulb.ExecutionPipeline, ctx: lightbulb.Context) -> None:
     """Hook to check if command is invoked in a valid channel"""
     # Allow commands in any channel - channel-specific file mapping is handled in utils
-    return True
+    pass
 
 # Legacy alias for backwards compatibility
 category_check = channel_check
