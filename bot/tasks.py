@@ -66,50 +66,80 @@ async def update_repeater_channel_name():
             if contact.get('device_role') == 2:
                 repeaters.append(contact)
 
-            # Filter out removed nodes
-            repeaters = [r for r in repeaters if not is_node_removed(r, removed_nodes_file)]
+        # Filter out removed nodes
+        repeaters = [r for r in repeaters if not is_node_removed(r, removed_nodes_file)]
 
-            # Categorize repeaters as online/offline based on last_seen
-            now = datetime.now().astimezone()
-            online_count = 0
-            offline_count = 0
-            dead_count = 0
+        # Categorize repeaters as online/offline based on last_seen
+        now = datetime.now().astimezone()
+        online_count = 0
+        offline_count = 0
+        dead_count = 0
 
-            for repeater in repeaters:
-                last_seen = repeater.get('last_seen')
-                if last_seen:
-                    try:
-                        ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
-                        days_ago = (now - ls).days
-                        if days_ago >= 12:
-                            dead_count += 1
-                        elif days_ago >= 3:
-                            offline_count += 1
-                        else:
-                            online_count += 1
-                    except Exception:
-                        # If we can't parse the timestamp, count as offline
-                        offline_count += 1
-                else:
-                    # No last_seen timestamp, count as offline
-                    offline_count += 1
-
-            # Count reserved repeaters
-            reserved_count = 0
-            if os.path.exists(reserved_nodes_file):
+        for repeater in repeaters:
+            last_seen = repeater.get('last_seen')
+            if last_seen:
                 try:
-                    with open(reserved_nodes_file, 'r') as f:
-                        reserved_data = json.load(f)
-                        reserved_count = len(reserved_data.get('data', []))
-                except Exception as e:
-                    logger.debug(f"Error reading {reserved_nodes_file}: {e}")
+                    ls = datetime.fromisoformat(str(last_seen).replace('Z', '+00:00'))
+                    days_ago = (now - ls).days
+                    if days_ago >= 12:
+                        dead_count += 1
+                    elif days_ago >= 3:
+                        offline_count += 1
+                    else:
+                        online_count += 1
+                except Exception:
+                    # If we can't parse the timestamp, count as offline
+                    offline_count += 1
+            else:
+                # No last_seen timestamp, count as offline
+                offline_count += 1
 
-            # Format channel name with counts
-            channel_name = f"{CHECK} {online_count} {WARN} {offline_count} {CROSS} {dead_count} {RESERVED} {reserved_count}"
+        # Count reserved repeaters
+        reserved_count = 0
+        if os.path.exists(reserved_nodes_file):
+            try:
+                with open(reserved_nodes_file, 'r') as f:
+                    reserved_data = json.load(f)
+                    reserved_count = len(reserved_data.get('data', []))
+            except Exception as e:
+                logger.debug(f"Error reading {reserved_nodes_file}: {e}")
 
-            # Update channel name
-            await bot.rest.edit_channel(repeater_channel_id, name=channel_name)
-            # logger.info(f"Updated channel {repeater_channel_id} name to: {channel_name}")
+        # Format channel name with counts
+        new_channel_name = f"{CHECK} {online_count} {WARN} {offline_count} {CROSS} {dead_count} {RESERVED} {reserved_count}"
+
+        # Check current channel name before updating to avoid unnecessary API calls
+        try:
+            channel = await bot.rest.fetch_channel(repeater_channel_id)
+            current_name = channel.name if hasattr(channel, 'name') else None
+
+            # Only update if the name has changed
+            if current_name == new_channel_name:
+                logger.debug(f"Channel name unchanged, skipping update: {new_channel_name}")
+                return
+        except Exception as e:
+            logger.debug(f"Could not fetch current channel name, proceeding with update: {e}")
+
+        # Update channel name
+        try:
+            await bot.rest.edit_channel(repeater_channel_id, name=new_channel_name)
+            logger.debug(f"Updated channel {repeater_channel_id} name to: {new_channel_name}")
+        except hikari.RateLimitedError as e:
+            logger.warning(f"Rate limited when updating channel name. Retrying after delay: {e}")
+            # Wait for the rate limit to clear, then retry once
+            retry_after = getattr(e, 'retry_after', 5.0)
+            await asyncio.sleep(retry_after)
+            try:
+                await bot.rest.edit_channel(repeater_channel_id, name=new_channel_name)
+                logger.debug(f"Retry successful: Updated channel {repeater_channel_id} name to: {new_channel_name}")
+            except Exception as retry_e:
+                logger.error(f"Retry failed when updating channel name: {retry_e}")
+        except hikari.HTTPResponseError as e:
+            # Check if it's a rate limit error (status 429)
+            if e.status_code == 429:
+                logger.warning(f"Rate limited when updating channel name (HTTP 429). Skipping this update cycle.")
+                # Don't retry immediately, let the next cycle handle it
+            else:
+                raise  # Re-raise if it's a different HTTP error
 
     except Exception as e:
         logger.error(f"Error updating channel name: {e}")
@@ -120,8 +150,8 @@ async def periodic_channel_update():
     while True:
         try:
             await update_repeater_channel_name()
-            # Update every 15 minutes (900 seconds)
-            await asyncio.sleep(900)
+            # Update every 20 minutes (1200 seconds)
+            await asyncio.sleep(1200)
         except Exception as e:
             logger.error(f"Error in periodic channel update: {e}")
             # Wait 60 seconds before retrying on error
@@ -229,6 +259,10 @@ async def check_for_new_nodes():
         if new_node_keys:
             logger.info(f"Found {len(new_node_keys)} new node(s)")
 
+            # Update known_node_keys immediately to prevent duplicate notifications
+            # if the function is called again before notifications complete
+            known_node_keys.update(new_node_keys)
+
             # Send notification for each new node to the messenger channel
             for public_key in new_node_keys:
                 if public_key not in all_current_nodes_map:
@@ -264,28 +298,28 @@ async def check_for_new_nodes():
                     # Check if this repeater matches a reserved node and add to owner file
                     user_id = await check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file, owner_file)
 
-                # If this was a reserved repeater that became active, assign roles
-                if user_id:
+                    # If this was a reserved repeater that became active, assign roles
+                    if user_id:
+                        try:
+                            # Get guild_id from the channel
+                            channel = await bot.rest.fetch_channel(messenger_channel_id)
+                            guild_id = channel.guild_id if channel.guild_id else None
+
+                            if guild_id:
+                                await assign_repeater_owner_role(user_id, guild_id)
+                        except Exception as e:
+                            logger.error(f"Error assigning roles for reserved repeater: {e}")
+
                     try:
-                        # Get guild_id from the channel
-                        channel = await bot.rest.fetch_channel(messenger_channel_id)
-                        guild_id = channel.guild_id if channel.guild_id else None
-
-                        if guild_id:
-                            await assign_repeater_owner_role(user_id, guild_id)
+                        await bot.rest.create_message(messenger_channel_id, content=message)
+                        logger.info(f"Sent notification for new node: {prefix} - {node_name} to messenger channel")
                     except Exception as e:
-                        logger.error(f"Error assigning roles for reserved repeater: {e}")
+                        logger.error(f"Error sending new node notification: {e}")
 
-                try:
-                    await bot.rest.create_message(messenger_channel_id, content=message)
-                    logger.info(f"Sent notification for new node: {prefix} - {node_name} to messenger channel")
-                except Exception as e:
-                    logger.error(f"Error sending new node notification: {e}")
+                # elif node.get('device_role') == 1:
+                #     message = f"## {emoji_new}  **NEW COMPANION ALERT**\nSay hi to **{node_name}** on West Coast Mesh {emoji_wcmesh} 927.875"
 
-            # elif node.get('device_role') == 1:
-            #     message = f"## {emoji_new}  **NEW COMPANION ALERT**\nSay hi to **{node_name}** on West Coast Mesh {emoji_wcmesh} 927.875"
-
-        # Update known_node_keys
+        # Update known_node_keys to include all current nodes (in case some were removed)
         known_node_keys = all_current_node_keys.copy()
 
     except Exception as e:

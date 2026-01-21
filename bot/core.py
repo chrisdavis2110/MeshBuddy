@@ -46,8 +46,46 @@ known_node_keys = set()
 @lightbulb.hook(lightbulb.ExecutionSteps.CHECKS, skip_when_failed=True)
 async def channel_check(pl: lightbulb.ExecutionPipeline, ctx: lightbulb.Context) -> None:
     """Hook to check if command is invoked in a valid channel"""
-    # Allow commands in any channel - channel-specific file mapping is handled in utils
-    pass
+    # Get allowed channel IDs from config
+    bot_messenger_channel_id = config.get("discord", "bot_messenger_channel_id", fallback=None)
+
+    # Build list of allowed channels
+    allowed_channels = []
+    if bot_messenger_channel_id:
+        try:
+            allowed_channels.append(int(bot_messenger_channel_id))
+        except (ValueError, TypeError):
+            pass
+
+    # If no channels configured, allow all (backward compatibility)
+    if not allowed_channels:
+        logger.warning("No bot_messenger_channel_id configured - allowing commands in all channels")
+        return
+
+    # Check if command is in an allowed channel
+    if ctx.channel_id not in allowed_channels:
+        # Get channel names for better error message
+        allowed_channel_names = []
+        for channel_id in allowed_channels:
+            try:
+                channel = await bot.rest.fetch_channel(channel_id)
+                channel_name = channel.name if hasattr(channel, 'name') else f"<#{channel_id}>"
+                allowed_channel_names.append(f"#{channel_name}")
+            except Exception as e:
+                logger.debug(f"Could not fetch channel {channel_id}: {e}")
+                allowed_channel_names.append(f"<#{channel_id}>")
+
+        allowed_channels_str = ", ".join(allowed_channel_names) if allowed_channel_names else ", ".join(str(c) for c in allowed_channels)
+        try:
+            await ctx.respond(
+                f"❌ This command can only be used in the bot messenger channel(s): {allowed_channels_str}",
+                flags=hikari.MessageFlag.EPHEMERAL
+            )
+        except Exception as e:
+            logger.error(f"Error sending channel restriction message: {e}")
+        # Prevent command execution by raising an exception
+        # The hook has skip_when_failed=True, so any exception will prevent the command from running
+        raise Exception("Command not allowed in this channel")
 
 # Legacy alias for backwards compatibility
 category_check = channel_check
