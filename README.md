@@ -13,10 +13,11 @@ MeshBuddy is a comprehensive Discord bot that provides real-time monitoring and 
 - **Monitors Repeaters**: Tracks active, offline, and duplicate repeater nodes in your mesh network
 - **Manages Node Data**: Helps manage reserved nodes, removed nodes, and tracks node availability
 - **Generates QR Codes**: Creates QR codes for easy contact addition to MeshCore devices
-- **Provides Real-time Notifications**: Sends Discord alerts when new repeaters join the network
-- **Updates Channel Names**: Automatically updates Discord channel names with repeater counts
+- **Provides Real-time Notifications**: Sends Discord alerts when new repeaters join the network with location links (if available)
+- **Updates Channel Names**: Automatically updates Discord channel name with repeater counts (online, offline, dead, reserved)
 - **Key Generation**: Generates MeshCore keypairs with custom hex prefixes (uses [agessaman's](https://github.com/agessaman)
 [meshcore-keygen](https://github.com/agessaman/meshcore-keygen))
+- **Data Source Selection**: Automatically uses MQTT or API polling based on configuration
 
 ### Discord Bot Commands
 
@@ -71,35 +72,51 @@ MeshBuddy is a comprehensive Discord bot that provides real-time monitoring and 
    ```ini
    [discord]
    token = <YOUR_DISCORD_BOT_TOKEN>
-   repeater_channel_id = <DISCORD_CHANNEL_ID>
-   messenger_channel_id = <DISCORD_CHANNEL_ID>
+   repeater_status_channel_id = <DISCORD_CHANNEL_ID>
+   bot_messenger_channel_id = <DISCORD_CHANNEL_ID>
+   bot_owner_id = <YOUR_USER_ID>
+   repeater_owner_role_id = <ROLE_ID>
 
-   [meshcore]
-   mqtt_api = <YOUR_MQTT_API_URL>
+   [api]
+   api_enabled = False
+   api_url = https://api.letsmesh.net/api/nodes?region=<IATA>
+   api_poll_interval = 900
+
+   [mqtt]
+   mqtt_enabled = True
+   mqtt_url = <MQTT_BROKER_URL>
+   mqtt_port = <PORT>
+   mqtt_username = <USERNAME>
+   mqtt_password = <PASSWORD>
+   mqtt_transport = websockets
+   mqtt_ws_path = /
+   mqtt_tls = True
+   mqtt_topics = meshcore/<IATA>/+/packets
+
+   [meshmap]
+   url = https://analyzer.letsmesh.net/map
    ```
+
+   **Data Source Configuration:**
+   - Set `mqtt_enabled = True` in `[mqtt]` section to use MQTT (recommended for real-time updates)
+   - Set `api_enabled = True` in `[api]` section to use API polling (fallback if MQTT is unavailable)
+   - If both are enabled, MQTT takes priority
+   - If neither is enabled, the bot will run but won't receive node updates
 
 5. **Set up Discord Bot:**
    - Create a Discord application at https://discord.com/developers/applications
    - Create a bot and copy the token
-   - Invite the bot to your server with appropriate permissions (Send Messages, Embed Links, Attach Files, Use Slash Commands)
+   - Invite the bot to your server with appropriate permissions (Send Messages, Embed Links, Attach Files, Use Slash Commands, Manage Messages, Manage Channels, Manage Roles, View Channels)
+   - Get the channel IDs for:
+     - `repeater_status_channel_id`: Channel where repeater status counts will be displayed in the channel name
+     - `bot_messenger_channel_id`: Channel where new node notifications will be sent
 
-6. **Get your nodes.json file:**
-
-   You need a `nodes.json` file to run the bot. You have two options:
-
-   **Option A: Use your own MQTT broker**
-   - If you have access to a MeshCore MQTT broker, subscribe to the broker's packets topic
-   - Decode the data from your MQTT broker and create `nodes.json`
-   - Create a symlink `ln -s path/to/MQTT/nodes.json path/to/MeshBuddy/nodes.json`
-
-   **Option B: Use the meshupdater.py script**
-   - The `meshupdater.py` script fetches data from the configured MQTT API endpoint
-   - Run it to generate your initial `nodes.json` file:
-     ```bash
-     python meshupdater.py
-     ```
-   - This will create `nodes.json` in the current directory
-   - Add a cron job to run `meshupdater.py` every 15-30 mins
+6. **Data Files:**
+   The bot will automatically initialize required JSON files on startup if they don't exist:
+   - `nodes.json` - Main data file containing all network nodes (created by MQTT subscriber or API polling)
+   - `reservedNodes.json` - Tracks reserved hex prefixes for repeaters
+   - `repeaterOwners.json` - Tracks repeater ownership information
+   - `offReserved.json` - Tracks reserved nodes that have become active
 
 ## Running the Bot
 
@@ -111,13 +128,29 @@ To run the Discord bot manually:
 python hikari_bot.py
 ```
 
-### Updating Node Data
+The bot will:
+- Initialize required JSON files if they don't exist
+- Start MQTT subscriber (if `mqtt_enabled = True`) or API polling (if `api_enabled = True`)
+- Begin monitoring for new nodes and updating channel names
+- Process all Discord commands
 
-To update the `nodes.json` file with fresh data from your MQTT broker:
+### Data Source
 
-```bash
-python meshupdater.py
-```
+The bot automatically selects its data source based on configuration:
+
+- **MQTT (Recommended)**: Real-time updates via MQTT broker subscription
+  - Set `mqtt_enabled = True` in `[mqtt]` section
+  - The bot subscribes to configured MQTT topics and processes packets in real-time
+  - Creates/updates `nodes.json` automatically
+
+- **API Polling**: Periodic updates via HTTP API
+  - Set `api_enabled = True` in `[api]` section (and `mqtt_enabled = False`)
+  - Polls the API at the configured interval (`api_poll_interval`)
+  - Creates/updates `nodes.json` automatically
+
+- **No Data Source**: Bot runs but won't receive node updates
+  - Both `mqtt_enabled` and `api_enabled` are `False`
+  - Bot can still process commands using existing `nodes.json` file
 
 ## Using Service Files
 
@@ -166,30 +199,78 @@ The bot can run as a systemd service on Linux systems:
 
 ## Data Files
 
-The bot uses several JSON files to manage node data:
+The bot uses several JSON files to manage node data. All files are automatically initialized on startup if they don't exist:
 
-- **`nodes.json`** - Main data file containing all network nodes. This file is required and can be generated using `meshupdater.py` or provided from your own MQTT broker.
-- **`reservedNodes.json`** - Tracks reserved hex prefixes for repeaters
-- **`removedNodes.json`** - Tracks repeaters that have been removed or are offline
-- **`updated.json`** - Comparison results showing new, removed, and duplicate entries
-- **`update_summary.txt`** - Human-readable summary of the last update
+- **`nodes.json`** - Main data file containing all network nodes. Automatically created/updated by MQTT subscriber or API polling. Contains all nodes from all regions in a single file.
+- **`reservedNodes.json`** - Tracks reserved hex prefixes for repeaters. Users can reserve prefixes before deploying repeaters.
+- **`repeaterOwners.json`** - Tracks repeater ownership information. Links Discord users to their repeaters.
+- **`offReserved.json`** - Tracks reserved nodes that have become active. When a reserved repeater goes online, it's moved here.
+- **`removedNodes.json`** - Tracks repeaters that have been removed or are offline (optional, created when nodes are removed via `/remove` command)
 
-## Node Watcher Service
+All files use the same structure:
+```json
+{
+  "timestamp": "2026-01-21T09:31:50.444444Z",
+  "data": [...]
+}
+```
 
-The `node_watcher.py` script runs as a separate service and automatically:
+## Features
 
-- Removes reserved nodes from the reserved list when a repeater with the same hex prefix is detected
+### Automatic Node Monitoring
+
+The bot automatically:
+- Monitors `nodes.json` for new nodes and sends Discord notifications
+- Includes location links in new node alerts (if node has location data) pointing to the configured meshmap
+- Updates the repeater status channel name with counts (✅ online, ⚠️ offline, ❌ dead, ⏳ reserved)
+- Processes all nodes from a single `nodes.json` file
+
+### Node Watcher (Optional)
+
+The `node_watcher.py` script can run as a separate service and automatically:
+
+- Moves reserved nodes to `offReserved.json` when a repeater with the same hex prefix is detected
 - Removes nodes from `removedNodes.json` if they've advertised recently
 - Adds repeaters to `removedNodes.json` if they haven't been seen in over 14 days
 
 This script can be run manually or as a systemd service on Linux. Add the `--watch` flag to follow changes to `nodes.json`
 
+## Configuration Details
+
+### Discord Section
+- `token`: Your Discord bot token
+- `repeater_status_channel_id`: Channel where repeater counts are displayed in the channel name
+- `bot_messenger_channel_id`: Channel where new node notifications are sent
+- `bot_owner_id`: Your Discord user ID (for admin commands)
+- `repeater_owner_role_id`: Role ID to assign to users who claim repeaters
+
+### API Section
+- `api_enabled`: Set to `True` to enable API polling mode
+- `api_url`: API endpoint URL for fetching node data
+- `api_poll_interval`: How often to poll the API (in seconds, default: 900)
+
+### MQTT Section
+- `mqtt_enabled`: Set to `True` to enable MQTT mode (takes priority over API)
+- `mqtt_url`: MQTT broker URL
+- `mqtt_port`: MQTT broker port
+- `mqtt_username`: MQTT username
+- `mqtt_password`: MQTT password
+- `mqtt_transport`: Transport type (`websockets` or `tcp`)
+- `mqtt_ws_path`: WebSocket path (if using websockets)
+- `mqtt_tls`: Enable TLS (`True` or `False`)
+- `mqtt_topics`: Comma-separated list of MQTT topics to subscribe to
+
+### MeshMap Section
+- `url`: Base URL for the mesh map. Location links in new node notifications will use this URL with `?lat=...&long=...` appended.
+
 ## Troubleshooting
 
 - **Bot not responding**: Check that the Discord token is correct in `config.ini`
-- **No node data**: Ensure `nodes.json` exists and contains valid data. Run `meshupdater.py` to generate it.
+- **No node data**: Ensure MQTT or API is enabled in config. The bot will automatically create `nodes.json` when it receives data.
+- **Files not initializing**: Check that the bot has write permissions in the MeshBuddy directory
 - **Service won't start**: Check the log files in the `logs/` directory for error messages
 - **Permission errors**: Ensure the service user has read/write access to the MeshBuddy directory and log files
+- **MQTT connection fails**: Check MQTT credentials and network connectivity. The bot will fall back to API polling if configured.
 
 ## License
 
