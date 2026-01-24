@@ -255,11 +255,15 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
                                 # Invalid timestamp
                                 lines.append(f"⚪ {prefix}: {name} (invalid timestamp)")
 
-                message = "Duplicate Repeater Prefixes:\n" + "\n".join(lines)
+                if lines:
+                    header = "Duplicate Repeater Prefixes:"
+                    footer = f"Total Duplicates: {len(lines)}"
+                    await send_long_message(ctx, header, lines, footer)
+                else:
+                    await ctx.respond("No duplicate prefixes found.")
             else:
-                message = "No duplicate prefixes found."
-
-            await ctx.respond(message)
+                await ctx.respond("No duplicate prefixes found.")
+                
         except Exception as e:
             logger.error(f"Error in dupes command: {e}")
             await ctx.respond("Error retrieving duplicate prefixes.", flags=hikari.MessageFlag.EPHEMERAL)
