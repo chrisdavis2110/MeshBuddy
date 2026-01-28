@@ -27,6 +27,22 @@ async def get_category_id_from_context(ctx) -> int | None:
         return None
 
 
+async def get_messenger_channel_id_from_context(ctx) -> int | None:
+    """Get the messenger channel ID from the category where the command was invoked"""
+    try:
+        category_id = await get_category_id_from_context(ctx)
+        if category_id is None:
+            return None
+        category_section = str(category_id)
+        messenger_channel_id = config.get(category_section, "messenger_channel_id", fallback=None)
+        if messenger_channel_id:
+            return int(messenger_channel_id)
+        return None
+    except Exception as e:
+        logger.error(f"Error getting messenger channel ID from context: {e}")
+        return None
+
+
 # ============================================================================
 # File Path Helpers
 # ============================================================================
@@ -274,7 +290,20 @@ async def initialize_emojis(channel_id: int = None):
     try:
         # Get channel ID from config if not provided
         if channel_id is None:
-            channel_id = config.get("discord", "messenger_channel_id", fallback=None)
+            # Get the first category section that has messenger_channel_id
+            channel_id = None
+            all_sections = config.sections()
+            for section in all_sections:
+                try:
+                    # Try to convert to int to see if it's a category ID
+                    int(section)
+                    # Check if it has messenger_channel_id
+                    if config.has_option(section, "messenger_channel_id"):
+                        channel_id = config.get(section, "messenger_channel_id", fallback=None)
+                        break
+                except (ValueError, TypeError):
+                    # Not a numeric section, skip it
+                    continue
 
         if not channel_id:
             logger.warning("No channel_id available to initialize emojis")

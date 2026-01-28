@@ -12,3 +12,4 @@ placeholder.txt
 .DS_Store
 last_update*
 reaction*.json
+command_history.json

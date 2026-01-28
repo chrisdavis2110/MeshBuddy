@@ -16,6 +16,7 @@ import hikari
 from bot.core import bot, config, logger, CHECK, WARN, CROSS, RESERVED, known_node_keys, purge_semaphore
 from bot.utils import normalize_node, get_removed_nodes_set, get_server_emoji, is_node_removed
 from bot.helpers import check_reserved_repeater_and_add_owner, assign_repeater_owner_role
+from bot.command_history import command_history
 from helpers import load_data_from_json
 
 
@@ -294,6 +295,11 @@ async def check_for_new_nodes():
                     # Check if this repeater matches a reserved node and add to category-specific owner file
                     user_id = await check_reserved_repeater_and_add_owner(node, prefix, reserved_nodes_file, owner_file)
 
+                    # If this was a reserved repeater that became active, mark reservation as released
+                    if user_id:
+                        # Mark reservation released event (reservation was fulfilled/removed)
+                        command_history.mark_reservation_released(category_id)
+
                     # If this was a reserved repeater that became active, assign roles
                     if user_id:
                         try:
@@ -309,6 +315,9 @@ async def check_for_new_nodes():
                     try:
                         await bot.rest.create_message(int(messenger_channel_id), content=message)
                         logger.info(f"Sent notification for new node: {prefix} - {node_name} to category {category_id} channel")
+
+                        # Mark new node added event for command history
+                        command_history.mark_new_node_added(category_id)
                     except Exception as e:
                         logger.error(f"Error sending new node notification to category {category_id}: {e}")
 

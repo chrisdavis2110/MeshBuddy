@@ -23,6 +23,7 @@ from bot.utils import (
     get_reserved_nodes_file_for_context,
     get_removed_nodes_file_for_context,
     get_owner_file_for_context,
+    get_category_id_from_context,
     normalize_node,
     is_node_removed
 )
@@ -34,6 +35,7 @@ from bot.helpers import (
     get_user_display_name_from_member
 )
 from bot.events import display_owner_info
+from bot.command_history import command_history
 
 
 @client.register()
@@ -139,6 +141,16 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
             with open(reserved_nodes_file, 'w') as f:
                 json.dump(reserved_data, f, indent=2)
 
+            # Mark reservation made event for command history
+            try:
+                category_id = await get_category_id_from_context(ctx)
+                if category_id:
+                    command_history.mark_reservation_made(category_id)
+                else:
+                    logger.warning(f"Could not get category_id for reservation command in channel {ctx.channel_id}")
+            except Exception as e:
+                logger.error(f"Error marking reservation made in command history: {e}")
+
             await ctx.respond(message)
         except Exception as e:
             logger.error(f"Error in reserve command: {e}")
@@ -226,6 +238,16 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             # Save to file
             with open(reserved_nodes_file, 'w') as f:
                 json.dump(reserved_data, f, indent=2)
+
+            # Mark reservation released event for command history
+            try:
+                category_id = await get_category_id_from_context(ctx)
+                if category_id:
+                    command_history.mark_reservation_released(category_id)
+                else:
+                    logger.warning(f"Could not get category_id for release command in channel {ctx.channel_id}")
+            except Exception as e:
+                logger.error(f"Error marking reservation released in command history: {e}")
 
             message = f"{CHECK} Released hex prefix {hex_prefix}"
             await ctx.respond(message)
