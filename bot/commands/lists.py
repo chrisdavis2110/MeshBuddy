@@ -271,7 +271,7 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
 
 @client.register()
 class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
-    description="Get list of removed repeaters"):
+    description="Get list of removed repeaters", hooks=[category_check]):
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -307,7 +307,7 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
 
 @client.register()
 class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
-    description="Get list of reserved repeaters"):
+    description="Get list of reserved repeaters", hooks=[category_check]):
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
