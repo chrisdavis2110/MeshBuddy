@@ -94,10 +94,10 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
             message_parts = []
 
             if active_nodes or reserved_nodes:
+                message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n")
                 # List active nodes
                 if active_nodes:
                     # Prefix is in use or reserved
-                    message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n")
                     message_parts.append(f"Active Repeater(s):")
                     for i, repeater in enumerate(active_nodes, 1):
                         if isinstance(repeater, dict):
@@ -109,7 +109,6 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 # List reserved nodes
                 if reserved_nodes:
                     # Prefix is in use or reserved
-                    message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n")
                     message_parts.append(f"Reserved:")
                     for i, node in enumerate(reserved_nodes, 1):
                         name = node.get('name', 'Unknown')
