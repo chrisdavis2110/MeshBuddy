@@ -2,10 +2,14 @@
 Bot Tasks Module
 
 Contains background tasks and periodic functions:
-- Channel name updates
-- Node watcher
-- Message purging
-- Utility functions for long messages
+
+- update_repeater_channel_name: Periodically updates the name of the repeater channel with counts of online/offline/dead/reserved repeaters.
+- periodic_channel_update: Runs the channel update function at regular intervals.
+- check_for_new_nodes: Periodically checks for new nodes in category-specific nodes files and sends notifications to the appropriate Discord channels.
+- periodic_node_watcher: Runs the new node checker at regular intervals.
+- purge_old_messages_from_channel: Purges messages older than a specified number of days from a given channel, with special handling for forum channels.
+- periodic_message_purge: Periodically purges messages older than a specified number of days from all configured messenger channels.
+- send_long_message: Sends a message that may exceed Discord's character limit by splitting into multiple messages.
 """
 
 import json
@@ -272,7 +276,7 @@ async def check_for_new_nodes():
 
                 # Format node information
                 node_name = node.get('name', 'Unknown')
-                prefix = public_key[:2].upper() if public_key else '??'
+                prefix = public_key[:4].upper() if public_key else '????'
 
                 # Fetch server emojis
                 emoji_new = await get_server_emoji(int(messenger_channel_id), "meshBuddy_new")

@@ -24,7 +24,8 @@ from bot.utils import (
     get_removed_nodes_file_for_context,
     get_owner_file_for_context,
     normalize_node,
-    is_node_removed
+    is_node_removed,
+    validate_hex_prefix,
 )
 from bot.helpers import (
     process_repeater_ownership,
@@ -40,7 +41,7 @@ from bot.events import display_owner_info
 class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
     description="Reserve a hex prefix for a repeater", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1B2)')
     name = lightbulb.string('name', 'Repeater name')
 
     @lightbulb.invoke
@@ -50,11 +51,16 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
             hex_prefix = self.text.upper().strip()
 
             # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            if len(hex_prefix) != 4 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
+                await ctx.respond("Invalid hex format. Please use 4 characters (0000-FFFF), e.g., `A1B2`", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             name = self.name.strip()
+
+            # Validate name length (max 32 characters)
+            if len(name) > 32:
+                await ctx.respond("Invalid name. Name must be 32 characters or less.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
 
             # First, check if prefix is currently in use by an active repeater (within last 14 days)
             repeaters = await get_repeater_for_context(ctx, hex_prefix, days=14)
@@ -149,7 +155,7 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
 class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
     description="Release a hex prefix for a repeater", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1B2)')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -158,8 +164,8 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             hex_prefix = self.text.upper().strip()
 
             # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            if len(hex_prefix) != 4 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
+                await ctx.respond("Invalid hex format. Please use 4 characters (0000-FFFF), e.g., `A1B2`", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             # Get bot owner ID from config
@@ -238,18 +244,19 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
 class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
     description="Remove a repeater from the repeater list", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1B2)')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Remove a node from nodes.json and copy it to removedNodes.json"""
         try:
-            hex_prefix = self.text.upper().strip()
-
-            # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            if not ok:
+                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
+
+            hex_prefix = hex_prefix_or_err
+            plen = len(hex_prefix)
 
             # Load nodes.json
             nodes_data = await get_nodes_data_for_context(ctx)
@@ -262,11 +269,9 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
             matching_repeaters = []
 
             for node in nodes_list:
-                # Normalize field names
                 normalize_node(node)
-                node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
-                # Only consider repeaters (device_role == 2)
-                if node_prefix == hex_prefix and node.get('device_role') == 2:
+                pk = (node.get('public_key') or '').upper()
+                if node.get('device_role') == 2 and len(pk) >= plen and pk[:plen] == hex_prefix:
                     # Check if already removed
                     # Check if already removed using removed nodes file
                     removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
@@ -362,18 +367,18 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
 class ClaimRepeaterCommand(lightbulb.SlashCommand, name="claim",
     description="Claim ownership of a repeater", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1B2)')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Claim ownership of a repeater"""
         try:
-            hex_prefix = self.text.upper().strip()
-
-            # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            if not ok:
+                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
+            hex_prefix = hex_prefix_or_err
+            plen = len(hex_prefix)
 
             # Load nodes.json
             nodes_data = await get_nodes_data_for_context(ctx)
@@ -384,15 +389,12 @@ class ClaimRepeaterCommand(lightbulb.SlashCommand, name="claim",
             # Find all repeaters with matching prefix (device_role == 2)
             nodes_list = nodes_data.get('data', [])
             matching_repeaters = []
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
 
             for node in nodes_list:
-                # Normalize field names
                 normalize_node(node)
-                node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
-                # Only consider repeaters (device_role == 2)
-                if node_prefix == hex_prefix and node.get('device_role') == 2:
-                    # Check if already removed
-                    removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                pk = (node.get('public_key') or '').upper()
+                if node.get('device_role') == 2 and len(pk) >= plen and pk[:plen] == hex_prefix:
                     if not is_node_removed(node, removed_nodes_file):
                         matching_repeaters.append(node)
 
@@ -482,18 +484,18 @@ class ClaimRepeaterCommand(lightbulb.SlashCommand, name="claim",
 class UnclaimRepeaterCommand(lightbulb.SlashCommand, name="unclaim",
     description="Unclaim ownership of a repeater (owner or bot owner only)", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1B2)')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Unclaim ownership of a repeater"""
         try:
-            hex_prefix = self.text.upper().strip()
-
-            # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            if not ok:
+                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
+            hex_prefix = hex_prefix_or_err
+            plen = len(hex_prefix)
 
             # Load nodes.json
             nodes_data = await get_nodes_data_for_context(ctx)
@@ -504,15 +506,12 @@ class UnclaimRepeaterCommand(lightbulb.SlashCommand, name="unclaim",
             # Find all repeaters with matching prefix (device_role == 2)
             nodes_list = nodes_data.get('data', [])
             matching_repeaters = []
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
 
             for node in nodes_list:
-                # Normalize field names
                 normalize_node(node)
-                node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
-                # Only consider repeaters (device_role == 2)
-                if node_prefix == hex_prefix and node.get('device_role') == 2:
-                    # Check if already removed
-                    removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                pk = (node.get('public_key') or '').upper()
+                if node.get('device_role') == 2 and len(pk) >= plen and pk[:plen] == hex_prefix:
                     if not is_node_removed(node, removed_nodes_file):
                         matching_repeaters.append(node)
 
@@ -602,18 +601,18 @@ class UnclaimRepeaterCommand(lightbulb.SlashCommand, name="unclaim",
 class OwnerRepeaterCommand(lightbulb.SlashCommand, name="owner",
     description="Look up the owner of a repeater", hooks=[category_check], default_member_permissions=hikari.Permissions.MANAGE_MESSAGES):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1B2)')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Look up the owner of a repeater"""
         try:
-            hex_prefix = self.text.upper().strip()
-
-            # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            if not ok:
+                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
+            hex_prefix = hex_prefix_or_err
+            plen = len(hex_prefix)
 
             # Load nodes.json
             nodes_data = await get_nodes_data_for_context(ctx)
@@ -624,15 +623,12 @@ class OwnerRepeaterCommand(lightbulb.SlashCommand, name="owner",
             # Find all repeaters with matching prefix (device_role == 2)
             nodes_list = nodes_data.get('data', [])
             matching_repeaters = []
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
 
             for node in nodes_list:
-                # Normalize field names
                 normalize_node(node)
-                node_prefix = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
-                # Only consider repeaters (device_role == 2)
-                if node_prefix == hex_prefix and node.get('device_role') == 2:
-                    # Check if already removed
-                    removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+                pk = (node.get('public_key') or '').upper()
+                if node.get('device_role') == 2 and len(pk) >= plen and pk[:plen] == hex_prefix:
                     if not is_node_removed(node, removed_nodes_file):
                         matching_repeaters.append(node)
 

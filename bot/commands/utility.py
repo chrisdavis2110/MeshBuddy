@@ -12,11 +12,12 @@ import asyncio
 import hikari
 import lightbulb
 from concurrent.futures import ThreadPoolExecutor
-from bot.core import client, logger, CROSS, category_check, EMOJIS, pending_qr_selections
+from bot.core import client, logger, CROSS, CHECK, category_check, EMOJIS, pending_qr_selections
 from bot.utils import (
     get_repeater_for_context,
     get_removed_nodes_file_for_context,
     is_node_removed,
+    validate_hex_prefix,
 )
 from bot.helpers import generate_and_send_qr
 
@@ -25,7 +26,7 @@ from bot.helpers import generate_and_send_qr
 class QRCodeCommand(lightbulb.SlashCommand, name="qr",
     description="Generate a QR code for adding a contact", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1 or A1B2)')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -33,17 +34,16 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
         try:
             # Check if hex parameter was provided
             if self.text is None:
-                await ctx.respond("Please provide a hex prefix (e.g., `/qr A1`)", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond("Please provide a hex prefix (e.g., `/qr A1` or `/qr A1B2`)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
-            hex_prefix = self.text.upper().strip()
-
-            # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/qr A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            if not ok:
+                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
+            hex_prefix = hex_prefix_or_err
 
-            # Get repeaters (now returns a list)
+            # Get repeaters
             repeaters = await get_repeater_for_context(ctx, hex_prefix)
 
             # Filter out removed nodes

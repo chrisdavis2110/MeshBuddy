@@ -468,7 +468,7 @@ class NodeWatcher:
             return
 
         # Check all current repeaters against reserved nodes
-        # Match by: public_key prefix (first 2 chars) AND node name contains reserved name (case-insensitive)
+        # Match by: public_key prefix (first 4 chars) AND node name contains reserved name (case-insensitive)
         updated_reserved_list = []
         removed_any = False
 
@@ -493,7 +493,7 @@ class NodeWatcher:
             matched_public_key = None
 
             for public_key, node in current_nodes_map.items():
-                node_prefix = public_key.upper()[:2] if len(public_key) >= 2 else ''
+                node_prefix = public_key.upper()[:4] if len(public_key) >= 4 else ''
                 node_name = node.get('name', '').strip()
 
                 # Match if prefix matches and node name contains reserved name (case-insensitive)
@@ -513,9 +513,9 @@ class NodeWatcher:
                 if reserved_prefix not in off_reserved_prefixes:
                     off_reserved_list.append(reserved_node)
                     off_reserved_prefixes.add(reserved_prefix)
-                    logger.info(f"Repeater with public_key {matched_public_key[:2].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - moving to offReserved list")
+                    logger.info(f"Repeater with public_key {matched_public_key[:4].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - moving to offReserved list")
                 else:
-                    logger.info(f"Repeater with public_key {matched_public_key[:2].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - already in offReserved list")
+                    logger.info(f"Repeater with public_key {matched_public_key[:4].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - already in offReserved list")
                 removed_any = True
             else:
                 # Keep this reserved node in the list
@@ -610,7 +610,7 @@ class NodeWatcher:
 
                 # Check if it's been seen recently
                 if self.is_node_recently_seen(current_node):
-                    node_hex = current_node.get('public_key', '')[:2].upper() if current_node.get('public_key') else ''
+                    node_hex = current_node.get('public_key', '')[:4].upper() if current_node.get('public_key') else ''
                     node_name = current_node.get('name', 'Unknown')
                     logger.info(f"Removed node {node_hex}: {node_name} has advertised recently - removing from removed list")
                     removed_any = True
@@ -670,7 +670,7 @@ class NodeWatcher:
                 days_since_seen = (now - last_seen).days
 
                 if days_since_seen > REMOVAL_THRESHOLD_DAYS:
-                    node_hex = public_key[:2].upper() if len(public_key) >= 2 else ''
+                    node_hex = public_key[:4].upper() if len(public_key) >= 4 else ''
                     node_name = node.get('name', 'Unknown')
                     logger.info(f"Repeater {node_hex}: {node_name} has not been seen in {days_since_seen} days (>14 days) - adding to removedNodes")
                     nodes_to_add.append(node)
