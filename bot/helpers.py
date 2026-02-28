@@ -3,6 +3,16 @@ Bot Helpers Module
 
 Contains helper functions for QR codes, role assignment, ownership management,
 and repeater processing.
+
+- generate_and_send_qr: Generate a QR code for a contact and send it as an image attachment.
+- assign_repeater_owner_role: Assign configured Discord roles to a user when they claim a repeater.
+- get_owner_info_for_repeater: Retrieve owner information for a repeater from the owner file.
+- get_user_display_name_from_member: Get the display name (nickname or username) of a user from the Discord server.
+- can_user_remove_repeater: Check if a user has permission to remove a repeater (owner or bot owner).
+- process_repeater_ownership: Handle the claiming of a repeater by adding the owner info to the owner file and assigning roles.
+- process_repeater_removal: Handle the removal of a repeater by adding it to the removed nodes file.
+- process_repeater_unclaim: Handle the unclaiming of a repeater by removing the owner info from the owner file and optionally removing roles.
+- check_reserved_repeater_and_add_owner: Check if a new repeater matches a reserved node and add to category-specific repeaterOwners file.
 """
 
 import json
@@ -75,7 +85,7 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
         img_data = img_bytes.getvalue()
 
         # Send as file attachment
-        prefix = public_key[:2].upper() if public_key else '??'
+        prefix = public_key[:4].upper() if public_key else '????'
         message = f"QR Code for {prefix}: {name}"
 
         # Create file attachment using hikari.Bytes
@@ -380,7 +390,7 @@ async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
                 existing_owner = owner
                 break
 
-        prefix = public_key[:2].upper() if public_key else '??'
+        prefix = public_key[:4].upper() if public_key else '????'
         name = selected_repeater.get('name', 'Unknown')
 
         if existing_owner:
@@ -556,7 +566,7 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
                 break
 
         if already_removed:
-            message = f"{WARN} Repeater {selected_prefix[:2]}: {selected_name} has already been removed"
+            message = f"{WARN} Repeater {selected_prefix[:4]}: {selected_name} has already been removed"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
                 await ctx_or_interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
@@ -575,7 +585,7 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
         with open(removed_nodes_file, 'w') as f:
             json.dump(removed_data, f, indent=2)
 
-        message = f"{CHECK} Repeater {selected_prefix[:2]}: {selected_name} has been removed"
+        message = f"{CHECK} Repeater {selected_prefix[:4]}: {selected_name} has been removed"
 
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
             await ctx_or_interaction.create_initial_response(
@@ -737,7 +747,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         with open(owner_file, 'w') as f:
             json.dump(owners_data, f, indent=2)
 
-        prefix = public_key[:2].upper() if public_key else '??'
+        prefix = public_key[:4].upper() if public_key else '????'
         name = selected_repeater.get('name', 'Unknown')
         message = f"{CHECK} Successfully unclaimed repeater {prefix}: **{name}**"
 

@@ -85,7 +85,7 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
             # Add active repeaters
             if repeaters:
                 for contact in repeaters:
-                    prefix = contact.get('public_key', '')[:2] if contact.get('public_key') else '??'
+                    prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
                     name = contact.get('name', 'Unknown')
                     active_prefixes.add(prefix.upper())
                     last_seen = contact.get('last_seen')
@@ -182,7 +182,7 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
                 lines = []
                 now = datetime.now().astimezone()
                 for contact in repeaters:
-                    prefix = contact.get('public_key', '')[:2] if contact.get('public_key') else '??'
+                    prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
                     name = contact.get('name', 'Unknown')
                     last_seen = contact.get('last_seen')
                     try:
@@ -261,7 +261,7 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
                 for repeater in repeaters:
                     public_key = (repeater.get('public_key', '').upper() if repeater.get('public_key') else '')
                     if public_key:
-                        prefix = public_key[:2]
+                        prefix = public_key[:4]
                         by_prefix.setdefault(prefix, []).append(repeater)
 
                 lines = []
@@ -314,7 +314,7 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
 
 @client.register()
 class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
-    description="Get list of removed repeaters"):
+    description="Get list of removed repeaters", hooks=[category_check]):
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -328,7 +328,7 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
                     with open(removed_nodes_file, 'r') as f:
                         removed_data = json.load(f)
                         for node in removed_data.get('data', []):
-                            public_key = node.get('public_key', '')[:2].upper() if node.get('public_key') else ''
+                            public_key = node.get('public_key', '')[:4].upper() if node.get('public_key') else ''
                             name = node.get('name', 'Unknown')
                             if public_key and name and node.get('device_role') == 2:
                                 lines.append(f"{CROSS} {public_key}: {name}")
@@ -350,7 +350,7 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
 
 @client.register()
 class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
-    description="Get list of reserved repeaters"):
+    description="Get list of reserved repeaters", hooks=[category_check]):
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
@@ -419,6 +419,7 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
 class OpenKeysCommand(lightbulb.SlashCommand, name="open",
     description="Get list of unused hex keys", hooks=[category_check]):
 
+    hex_char = lightbulb.string('hex', 'Hex prefix (e.g., A1)', default=None)
     days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
@@ -426,26 +427,75 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
         """Get list of unused hex keys"""
         try:
             unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
-            if unused_keys:
-                # Group keys by tens digit (first hex digit)
-                grouped_keys = {}
-                for key in unused_keys:
-                    tens_digit = key[0]  # First character of hex (0-9, A-F)
-                    if tens_digit not in grouped_keys:
-                        grouped_keys[tens_digit] = []
-                    grouped_keys[tens_digit].append(key)
 
-                # Format keys with each tens group on its own line
-                lines = []
-                for tens in sorted(grouped_keys.keys()):
-                    keys_in_group = sorted(grouped_keys[tens], key=lambda x: int(x[1], 16))
-                    lines.append(" ".join(f"{key:>2}" for key in keys_in_group))
+            if not unused_keys:
+                await ctx.respond("All 65536 keys (0000-FFFF) are currently in use!")
+                return
 
-                message = f"Unused Keys ({len(unused_keys)} total):\n" + "\n".join(lines)
-            else:
-                message = "All 256 keys (00-FF) are currently in use!"
+            # If no hex argument provided, show count and prompt for hex
+            if self.hex_char is None:
+                count = len(unused_keys)
+                await ctx.respond(f"There are **{count}** unused keys. Use `/open <hex>` to see keys starting with that hex byte (00-FF).")
+                return
 
-            await ctx.respond(message)
+            # Validate hex byte (2 characters)
+            hex_char = self.hex_char.upper().strip()
+            if len(hex_char) != 2 or not all(c in '0123456789ABCDEF' for c in hex_char):
+                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/open A1`", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            # Filter keys that start with the specified hex byte (first 2 characters)
+            filtered_keys = [key for key in unused_keys if key.startswith(hex_char)]
+
+            if not filtered_keys:
+                await ctx.respond(f"No open keys found starting with '{hex_char}'.")
+                return
+
+            # Sort the filtered keys numerically
+            filtered_keys.sort(key=lambda x: int(x, 16))
+
+            # Group keys by the first character of the second byte (3rd character overall)
+            grouped_keys = {}
+            for key in filtered_keys:
+                third_char = key[2] if len(key) >= 3 else ''  # First char of second byte
+                if third_char not in grouped_keys:
+                    grouped_keys[third_char] = []
+                grouped_keys[third_char].append(key)
+
+            # Format keys, breaking long lines into chunks to fit Discord's 2000 char limit
+            lines = []
+            max_line_length = 1800  # Leave room for header/footer
+
+            # Process each group (each group starts a new line)
+            for third_char in sorted(grouped_keys.keys()):
+                keys_in_group = grouped_keys[third_char]
+
+                # Build line in chunks to avoid exceeding Discord's limit
+                current_line = []
+
+                for key in keys_in_group:
+                    key_str = f"{key:>4}"
+
+                    # Calculate what the line would look like with this key added
+                    test_line = current_line + [key_str]
+                    test_line_str = " ".join(test_line)
+
+                    # Check if adding this key would exceed the limit
+                    if current_line and len(test_line_str) > max_line_length:
+                        # Save current line and start a new one
+                        lines.append(" ".join(current_line))
+                        current_line = [key_str]
+                    else:
+                        # Add to current line
+                        current_line.append(key_str)
+
+                # Add any remaining keys as a line
+                if current_line:
+                    lines.append(" ".join(current_line))
+
+            header = f"Unused Keys starting with '{hex_char}':"
+            footer = f"Total: {len(filtered_keys)} keys"
+            await send_long_message(ctx, header, lines, footer)
         except Exception as e:
             logger.error(f"Error in open command: {e}")
             await ctx.respond("Error retrieving unused keys.", flags=hikari.MessageFlag.EPHEMERAL)

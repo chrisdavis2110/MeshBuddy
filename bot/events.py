@@ -2,9 +2,11 @@
 Bot Events Module
 
 Contains event handlers for Discord events:
-- Bot startup
-- Component interactions
-- Reaction add/remove events
+- on_starting: Initializes periodic tasks and MQTT subscriber on bot startup.
+- on_component_interaction: Handles interactions with select menus for remove, QR code, ownership claim, unclaim, and owner lookup.
+- on_reaction_add: Handles adding roles based on reactions.
+- on_reaction_remove: Handles removing roles based on reaction removals.
+- display_owner_info: Display owner information for a repeater.
 """
 
 import json
@@ -403,7 +405,7 @@ async def display_owner_info(repeater, owner_file: str, ctx_or_interaction):
 
         public_key = repeater.get('public_key', '')
         name = repeater.get('name', 'Unknown')
-        prefix = public_key[:2].upper() if public_key else '??'
+        prefix = public_key[:4].upper() if public_key else '????'
 
         # Get owner info
         owner_info = await get_owner_info_for_repeater(repeater, owner_file)

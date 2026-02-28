@@ -3,6 +3,26 @@ Bot Utilities Module
 
 Contains helper functions for file paths, category management, context helpers,
 emoji management, and node utilities.
+
+- get_category_id_from_context: Get the category ID from the context where the command was invoked.
+- get_nodes_file_for_category: Get the nodes file name based on category ID, with config mapping support.
+- get_reserved_nodes_file_for_category: Get the reserved nodes file name based on category ID, with config mapping support.
+- get_removed_nodes_file_for_category: Get the removed nodes file name based on category ID, with config mapping support.
+- get_owner_file_for_category: Get the owner file name based on category ID, with config mapping support.
+- get_reserved_nodes_file_for_context: Get reserved nodes file name based on the category where the command was invoked.
+- get_removed_nodes_file_for_context: Get removed nodes file name based on the category where the command was invoked.
+- get_owner_file_for_context: Get owner file name based on the category where the command was invoked.
+- get_nodes_data_for_context: Get nodes data based on the category where the command was invoked.
+- validate_hex_prefix: Validate hex prefix (2 or 4 chars); returns (ok, normalized_hex or error_msg).
+- get_repeater_for_context: Get repeater data based on the category where the command was invoked, filtered by prefix (2 or 4 hex chars) and days.
+- get_extract_device_types_for_context: Extract device types based on the category where the command was invoked.
+- get_unused_keys_for_context: Get unused keys based on the category where the command was invoked, excluding removed and reserved nodes.
+- initialize_emojis: Pre-load emojis when bot starts, with logging of available emojis for debugging.
+- get_server_emoji: Get a Discord server emoji by name, with caching and config override support.
+- normalize_node: Normalize node field names to handle both 'role'/'device_role' and 'last_heard'/'last_seen'.
+- get_removed_nodes_set: Load removedNodes.json and return a set of (prefix, name) tuples for quick lookup, with retry logic for file access.
+- is_node_removed: Check if a contact node has been removed by looking it up in the removed nodes set.
+- extract_prefix_for_sort: Extract prefix from line for sorting (e.g., 'A1: Name' -> 'A1'), converting hex to integer for proper sorting.
 """
 
 import json
@@ -180,20 +200,31 @@ async def get_nodes_data_for_context(ctx):
     return load_data_from_json(nodes_file)
 
 
+def validate_hex_prefix(hex_str: str) -> tuple[bool, str]:
+    """Validate hex prefix: 2 chars (00-FF) or 4 chars (0000-FFFF). Returns (ok, normalized_hex or error_msg)."""
+    if not hex_str or not isinstance(hex_str, str):
+        return (False, "Please provide a hex prefix (2 or 4 characters).")
+    raw = hex_str.strip().upper()
+    if len(raw) not in (2, 4):
+        return (False, "Invalid hex format. Use 2 characters (00-FF) or 4 characters (0000-FFFF), e.g. `A1` or `A1B2`.")
+    if not all(c in "0123456789ABCDEF" for c in raw):
+        return (False, "Invalid hex format. Use only hex digits (0-9, A-F).")
+    return (True, raw)
+
+
 async def get_repeater_for_context(ctx, prefix: str, days: int = 14):
     """Get repeater data based on the category where the command was invoked"""
     data = await get_nodes_data_for_context(ctx)
-    # Use extract_device_types with the category-specific data
     from helpers.device_utils import extract_device_types
     devices = extract_device_types(data=data, device_types=['repeaters'], days=days)
     if devices is None:
         return None
     repeaters = devices.get('repeaters', [])
-    # Find all repeaters with the specified prefix
+    plen = len(prefix)
     matching_repeaters = []
     for contact in repeaters:
-        contact_prefix = contact.get('public_key', '')[:2] if contact.get('public_key') else '??'
-        if contact_prefix.upper() == prefix.upper():
+        pk = (contact.get('public_key') or '').upper()
+        if len(pk) >= plen and pk[:plen] == prefix.upper():
             matching_repeaters.append(contact)
     return matching_repeaters if matching_repeaters else None
 
@@ -248,7 +279,7 @@ async def get_unused_keys_for_context(ctx, days=14):
         contact_name = contact.get('name', '').strip()
         if (contact_prefix, contact_name) in removed_set:
             continue
-        used_keys.add(contact_prefix[:2].upper())
+        used_keys.add(contact_prefix[:4].upper())
     # Load reserved nodes (category-specific)
     reserved_set = set()
     reserved_nodes_file = get_reserved_nodes_file_for_category(category_id)
@@ -262,13 +293,13 @@ async def get_unused_keys_for_context(ctx, days=14):
                         reserved_set.add(prefix)
         except Exception as e:
             logger.debug(f"Error reading reservedNodes.json: {e}")
-    # Generate all possible hex keys from 00 to FF
+    # Generate all possible hex keys from 0000 to FFFF
     all_possible_keys = set()
-    for i in range(256):
-        hex_key = f"{i:02X}"
+    for i in range(65536):
+        hex_key = f"{i:04X}"
         all_possible_keys.add(hex_key)
     # Find unused keys
-    unused_keys = all_possible_keys - used_keys - reserved_set - set(['00', 'FF'])
+    unused_keys = all_possible_keys - used_keys - reserved_set - set(['0000', 'FFFF'])
     if unused_keys:
         return sorted(unused_keys)
     return []

@@ -137,7 +137,7 @@ def compare_data(new_data, old_data=None):
                     if contact_key == key:
                         name = contact.get('name', 'Unknown')
                         # Store tuple of (prefix for display, name)
-                        duplicate_keys.append((key[:2], name))
+                        duplicate_keys.append((key[:4], name))
 
     # Sort duplicate keys by key prefix
     duplicate_keys.sort(key=lambda x: x[0])
@@ -146,7 +146,7 @@ def compare_data(new_data, old_data=None):
     new_contacts_list = []
     for contact in new_contacts:
         if isinstance(contact, dict):
-            key = contact.get('public_key', '')[:2].upper() if contact.get('public_key') else ''
+            key = contact.get('public_key', '')[:4].upper() if contact.get('public_key') else ''
             if key and key in newly_added_keys:
                 new_contacts_list.append(contact)
         else:
@@ -158,7 +158,7 @@ def compare_data(new_data, old_data=None):
     duplicate_key_prefixes = [key for key, name in duplicate_keys]  # Extract just the prefixes
     for contact in new_contacts:
         if isinstance(contact, dict) and contact.get('device_role') == 2:
-            key = contact.get('public_key', '')[:2]
+            key = contact.get('public_key', '')[:4]
             if key in duplicate_key_prefixes:  # Include only repeaters
                 duplicate_contacts.append(contact)
         else:

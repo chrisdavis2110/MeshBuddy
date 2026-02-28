@@ -19,6 +19,7 @@ from bot.utils import (
     get_unused_keys_for_context,
     normalize_node,
     is_node_removed,
+    validate_hex_prefix,
 )
 
 
@@ -26,7 +27,7 @@ from bot.utils import (
 class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
     description="Check if a hex prefix is available", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1 or A1B2)')
     days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
@@ -36,19 +37,19 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
 
             # Check if hex parameter was provided
             if self.text is None:
-                await ctx.respond("Please provide a hex prefix (e.g., `/prefix A1`)", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond("Please provide a hex prefix (e.g., `/prefix A1` or `/prefix A1B2`)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
-            hex_prefix = self.text.upper().strip()
-
-            # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/prefix A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            if not ok:
+                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
+            hex_prefix = hex_prefix_or_err
 
             # Collect all nodes with this prefix
             active_nodes = []
             reserved_nodes = []
+            plen = len(hex_prefix)
 
             # Load all repeaters (not filtered by days) to include future timestamps
             data = await get_nodes_data_for_context(ctx)
@@ -60,12 +61,10 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                     for contact in contacts:
                         if not isinstance(contact, dict):
                             continue
-                        # Normalize field names
                         normalize_node(contact)
-                        # Only include repeaters (device_role == 2) with matching prefix
                         if contact.get('device_role') == 2:
-                            contact_prefix = contact.get('public_key', '')[:2].upper() if contact.get('public_key') else ''
-                            if contact_prefix == hex_prefix:
+                            pk = (contact.get('public_key') or '').upper()
+                            if len(pk) >= plen and pk[:plen] == hex_prefix:
                                 repeaters.append(contact)
 
                     # Filter out removed nodes (category-specific)
@@ -85,7 +84,9 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                                 data_list = []
                             for node in data_list:
                                 if node and isinstance(node, dict):
-                                    if node.get('prefix', '').upper() == hex_prefix:
+                                    node_prefix = (node.get('prefix') or '').upper()
+                                    # Reserved nodes store 4-char prefix; match if it starts with hex_prefix (2 or 4)
+                                    if len(node_prefix) >= plen and node_prefix[:plen] == hex_prefix:
                                         reserved_nodes.append(node)
                 except Exception as e:
                     logger.debug(f"Error reading reserved nodes file: {e}")
@@ -94,10 +95,10 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
             message_parts = []
 
             if active_nodes or reserved_nodes:
+                message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n")
                 # List active nodes
                 if active_nodes:
                     # Prefix is in use or reserved
-                    message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n")
                     message_parts.append(f"Active Repeater(s):")
                     for i, repeater in enumerate(active_nodes, 1):
                         if isinstance(repeater, dict):
@@ -109,7 +110,6 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 # List reserved nodes
                 if reserved_nodes:
                     # Prefix is in use or reserved
-                    message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE**\n")
                     message_parts.append(f"Reserved:")
                     for i, node in enumerate(reserved_nodes, 1):
                         name = node.get('name', 'Unknown')
@@ -124,10 +124,16 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 if total == 0:
                     message_parts.append(f"\n{CHECK} {hex_prefix} is **AVAILABLE** for use!")
             else:
-                # Check if prefix is in unused keys
+                # Check availability: 4-char must be in unused_keys; 2-char is available if any 4-char under it is unused
                 unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
-
-                if unused_keys and hex_prefix in unused_keys:
+                if unused_keys:
+                    if len(hex_prefix) == 4:
+                        available = hex_prefix in unused_keys
+                    else:
+                        available = any(k.startswith(hex_prefix) for k in unused_keys)
+                else:
+                    available = False
+                if available:
                     message_parts.append(f"{CHECK} {hex_prefix} is **AVAILABLE** for use!")
                 else:
                     message_parts.append(f"{CROSS} {hex_prefix} is **NOT AVAILABLE** (may be in use or removed)")
@@ -143,7 +149,7 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
 class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
     description="Get the stats of a repeater", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1)')
+    text = lightbulb.string('hex', 'Hex prefix (e.g., A1 or A1B2)')
     days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
@@ -152,15 +158,15 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
         try:
             # Check if hex parameter was provided
             if self.text is None:
-                await ctx.respond("Please provide a hex prefix (e.g., `/stats A1`)", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond("Please provide a hex prefix (e.g., `/stats A1` or `/stats A1B2`)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
-            hex_prefix = self.text.upper().strip()
-
-            # Validate hex format
-            if len(hex_prefix) != 2 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/stats A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            if not ok:
+                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
+            hex_prefix = hex_prefix_or_err
+            plen = len(hex_prefix)
 
             # Load all repeaters (not filtered by days) to include future timestamps
             data = await get_nodes_data_for_context(ctx)
@@ -173,17 +179,15 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                 await ctx.respond("Error retrieving repeater stats.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
-            # Filter to repeaters with matching prefix and normalize field names
+            # Filter to repeaters with matching prefix
             repeaters = []
             for contact in contacts:
                 if not isinstance(contact, dict):
                     continue
-                # Normalize field names
                 normalize_node(contact)
-                # Only include repeaters (device_role == 2) with matching prefix
                 if contact.get('device_role') == 2:
-                    contact_prefix = contact.get('public_key', '')[:2].upper() if contact.get('public_key') else ''
-                    if contact_prefix == hex_prefix:
+                    pk = (contact.get('public_key') or '').upper()
+                    if len(pk) >= plen and pk[:plen] == hex_prefix:
                         repeaters.append(contact)
 
             # Filter out removed nodes (category-specific)
@@ -275,7 +279,8 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                                     data_list = []
                                 for node in data_list:
                                     if node and isinstance(node, dict):
-                                        if node.get('prefix', '').upper() == hex_prefix:
+                                        node_prefix = (node.get('prefix') or '').upper()
+                                        if len(node_prefix) >= plen and node_prefix[:plen] == hex_prefix:
                                             reserved_node = node
                                             break
                     except Exception as e:
