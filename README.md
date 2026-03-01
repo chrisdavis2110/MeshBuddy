@@ -15,8 +15,7 @@ MeshBuddy is a comprehensive Discord bot that provides real-time monitoring and 
 - **Generates QR Codes**: Creates QR codes for easy contact addition to MeshCore devices
 - **Provides Real-time Notifications**: Sends Discord alerts when new repeaters join the network with location links (if available)
 - **Updates Channel Names**: Automatically updates Discord channel name with repeater counts (online, offline, dead, reserved)
-- **Key Generation**: Generates MeshCore keypairs with custom hex prefixes (uses [agessaman's](https://github.com/agessaman)
-[meshcore-keygen](https://github.com/agessaman/meshcore-keygen))
+- **Key Generation**: Generates MeshCore keypairs with custom hex prefixes via `/keygen`. Uses the Rust [meshcore-utils](https://github.com/samschlegel/meshcore-utils) keygen when available (faster); falls back to the Python [meshcore-keygen](https://github.com/agessaman/meshcore-keygen).
 - **Data Source Selection**: Automatically uses MQTT or API polling based on configuration
 
 ### Discord Bot Commands
@@ -117,6 +116,37 @@ MeshBuddy is a comprehensive Discord bot that provides real-time monitoring and 
    - `reservedNodes.json` - Tracks reserved hex prefixes for repeaters
    - `repeaterOwners.json` - Tracks repeater ownership information
    - `offReserved.json` - Tracks reserved nodes that have become active
+
+7. **Optional: Rust keygen (recommended for `/keygen`)**
+    The `/keygen` command is faster when the Rust **meshcore-utils** keygen is built. To use it you need **Cargo** (Rust’s build tool), which is installed as part of the Rust toolchain.
+
+    **Install Rust and Cargo**
+
+    - **macOS / Linux (rustup):**
+      ```bash
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+      source "$HOME/.cargo/env"
+      ```
+
+    - **Ubuntu:** Install `curl` and build tools, then run the command above:
+      ```bash
+      sudo apt update
+      sudo apt install -y curl build-essential
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+      source "$HOME/.cargo/env"
+      ```
+
+    **Build the keygen**
+
+    From the MeshBuddy repo root:
+
+    ```bash
+    cd meshcore-utils
+    cargo build --release
+    ```
+
+    The binary will be at `meshcore-utils/target/release/mc-keygen`. The bot looks for it there (or in your `PATH`). If the Rust keygen is not available, `/keygen` falls back to the Python meshcore-keygen module.
+
 
 ## Running the Bot
 
@@ -271,6 +301,7 @@ This script can be run manually or as a systemd service on Linux. Add the `--wat
 - **Service won't start**: Check the log files in the `logs/` directory for error messages
 - **Permission errors**: Ensure the service user has read/write access to the MeshBuddy directory and log files
 - **MQTT connection fails**: Check MQTT credentials and network connectivity. The bot will fall back to API polling if configured.
+- **`/keygen` says no key generator available**: Build the Rust keygen with `cargo build --release` in `meshcore-utils/`, or install the Python `meshcore_keygen` module
 
 ## License
 

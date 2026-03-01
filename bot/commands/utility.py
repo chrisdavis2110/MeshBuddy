@@ -20,6 +20,63 @@ from bot.utils import (
     validate_hex_prefix,
 )
 from bot.helpers import generate_and_send_qr
+import json
+import os
+import shutil
+
+# Base path for resolving meshcore-utils (Rust keygen)
+_MESHCORE_UTILS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "meshcore-utils")
+_MC_KEYGEN_BINARY = os.path.join(_MESHCORE_UTILS_DIR, "target", "release", "mc-keygen")
+
+
+def _find_mc_keygen():
+    """Return path to mc-keygen binary, or None if not found."""
+    if os.path.isfile(_MC_KEYGEN_BINARY):
+        return _MC_KEYGEN_BINARY
+    return shutil.which("mc-keygen")
+
+
+async def _run_rust_keygen(prefix: str, timeout_sec: float = 90):
+    """
+    Run meshcore-utils mc-keygen with --json. Returns dict with public_key, private_key,
+    matched_prefix, attempts, elapsed_secs (and keys_per_sec if elapsed_secs > 0), or None on failure/timeout.
+    """
+    binary = _find_mc_keygen()
+    if not binary:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            binary, prefix, "--json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            cwd=_MESHCORE_UTILS_DIR if os.path.isfile(_MC_KEYGEN_BINARY) else None,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            return None
+        if proc.returncode != 0:
+            return None
+        data = json.loads(stdout.decode())
+        out = {
+            "public_key": data["public_key"],
+            "private_key": data["private_key"],
+            "matched_prefix": data.get("matched_prefix", prefix),
+            "attempts": data.get("attempts", 0),
+            "elapsed_secs": data.get("elapsed_secs", 0.0),
+        }
+        if out["elapsed_secs"] > 0 and out["attempts"]:
+            out["keys_per_sec"] = int(out["attempts"] / out["elapsed_secs"])
+        else:
+            out["keys_per_sec"] = 0
+        return out
+    except (OSError, ValueError, KeyError) as e:
+        logger.debug(f"Rust keygen failed: {e}")
+        return None
 
 
 @client.register()
@@ -155,40 +212,62 @@ class KeygenCommand(lightbulb.SlashCommand, name="keygen",
                 await ctx.respond("Invalid hex format. Prefix must contain only hex characters (0-9, A-F)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
+            # MeshCore reserves 00 and FF prefixes
+            if hex_prefix.startswith("00") or hex_prefix.startswith("FF"):
+                await ctx.respond("Prefix cannot start with 00 or FF (reserved by MeshCore).", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
             # Send initial response
             await ctx.respond(f"🔑 Generating keypair with prefix `{hex_prefix}`... This may take a moment.", flags=hikari.MessageFlag.EPHEMERAL)
 
-            # Import keygen modules
+            # Prefer Rust mc-keygen (meshcore-utils) if available
+            key_info = await _run_rust_keygen(hex_prefix, timeout_sec=90)
+            if key_info:
+                attempts = key_info.get("attempts", 0)
+                elapsed = key_info.get("elapsed_secs", 0)
+                kps = key_info.get("keys_per_sec", 0)
+                elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed // 60)}m {elapsed % 60:.0f}s"
+                stats = f"✓ Match found! {attempts:,} attempts in {elapsed_str} ({kps:,} keys/sec)"
+                message = (
+                    f"**Public key:**  `{key_info['public_key']}`\n"
+                    f"**Private key:** `{key_info['private_key']}`"
+                )
+                await ctx.interaction.edit_initial_response(message)
+                return
+
+            # Fallback to Python meshcore_keygen
             try:
                 from meshcore_keygen import VanityConfig, VanityMode, MeshCoreKeyGenerator
             except ImportError as e:
                 logger.error(f"Error importing meshcore_keygen: {e}")
-                await ctx.interaction.edit_initial_response(f"{CROSS} Error: Could not import key generator module.")
+                await ctx.interaction.edit_initial_response(
+                    f"{CROSS} No key generator available. Build the Rust keygen with `cargo build --release` in meshcore-utils/, or install the Python meshcore_keygen module."
+                )
                 return
 
-            # Run key generation in executor to avoid blocking
             def generate_key():
                 config = VanityConfig(
                     mode=VanityMode.PREFIX,
                     target_prefix=hex_prefix,
-                    max_time=90,  # 90 second timeout
-                    max_iterations=100000000,  # 100M keys max
-                    num_workers=2,  # Use fewer workers for Discord bot
-                    batch_size=100000,  # 100K batch size
-                    health_check=False,  # Disable health check for faster generation
-                    verbose=False  # Disable verbose output
+                    max_time=90,
+                    max_iterations=100000000,
+                    num_workers=2,
+                    batch_size=100000,
+                    health_check=False,
+                    verbose=False
                 )
                 generator = MeshCoreKeyGenerator()
                 return generator.generate_vanity_key(config)
 
-            # Run in thread pool executor
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as executor:
                 key_info = await loop.run_in_executor(executor, generate_key)
 
             if key_info:
-                # Format output as requested
-                message = f"Public key: {key_info.public_hex}\nPrivate key: {key_info.private_hex}"
+                message = (
+                    f"**Public key:**  `{key_info.public_hex}`\n"
+                    f"**Private key:** `{key_info.private_hex}`"
+                )
                 await ctx.interaction.edit_initial_response(message)
             else:
                 await ctx.interaction.edit_initial_response(f"{CROSS} Could not generate key with prefix `{hex_prefix}` within the time limit. Try a shorter prefix or try again.")
