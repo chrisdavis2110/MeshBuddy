@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 config = load_config("config.ini")
 
 # Initialize bot and client
-bot = hikari.GatewayBot(config.get("discord", "devtoken"))
+bot = hikari.GatewayBot(config.get("discord", "token"))
 client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
 

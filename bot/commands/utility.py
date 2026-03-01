@@ -4,7 +4,6 @@ Utility Commands
 General utility commands:
 - qr: Generate a QR code for adding a contact
 - keygen: Generate a MeshCore keypair with a specific prefix
-- decode: Decode a raw packet hex string
 - help: Show all available commands
 """
 
@@ -25,6 +24,61 @@ from meshcoredecoder.types.enums import PayloadType
 from meshcoredecoder.utils.enum_names import get_route_type_name, get_device_role_name, get_payload_type_name
 import json
 import os
+import shutil
+
+# Base path for resolving meshcore-utils (Rust keygen)
+_MESHCORE_UTILS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "meshcore-utils")
+_MC_KEYGEN_BINARY = os.path.join(_MESHCORE_UTILS_DIR, "target", "release", "mc-keygen")
+
+
+def _find_mc_keygen():
+    """Return path to mc-keygen binary, or None if not found."""
+    if os.path.isfile(_MC_KEYGEN_BINARY):
+        return _MC_KEYGEN_BINARY
+    return shutil.which("mc-keygen")
+
+
+async def _run_rust_keygen(prefix: str, timeout_sec: float = 90):
+    """
+    Run meshcore-utils mc-keygen with --json. Returns dict with public_key, private_key,
+    matched_prefix, attempts, elapsed_secs (and keys_per_sec if elapsed_secs > 0), or None on failure/timeout.
+    """
+    binary = _find_mc_keygen()
+    if not binary:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            binary, prefix, "--json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            cwd=_MESHCORE_UTILS_DIR if os.path.isfile(_MC_KEYGEN_BINARY) else None,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            return None
+        if proc.returncode != 0:
+            return None
+        data = json.loads(stdout.decode())
+        out = {
+            "public_key": data["public_key"],
+            "private_key": data["private_key"],
+            "matched_prefix": data.get("matched_prefix", prefix),
+            "attempts": data.get("attempts", 0),
+            "elapsed_secs": data.get("elapsed_secs", 0.0),
+        }
+        if out["elapsed_secs"] > 0 and out["attempts"]:
+            out["keys_per_sec"] = int(out["attempts"] / out["elapsed_secs"])
+        else:
+            out["keys_per_sec"] = 0
+        return out
+    except (OSError, ValueError, KeyError) as e:
+        logger.debug(f"Rust keygen failed: {e}")
+        return None
 
 
 def load_secrets_from_file(secrets_file="secrets.json"):
@@ -522,40 +576,64 @@ class KeygenCommand(lightbulb.SlashCommand, name="keygen",
                 await ctx.respond("Invalid hex format. Prefix must contain only hex characters (0-9, A-F)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
+            # MeshCore reserves 00 and FF prefixes
+            if hex_prefix.startswith("00") or hex_prefix.startswith("FF"):
+                await ctx.respond("Prefix cannot start with 00 or FF (reserved by MeshCore).", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
             # Send initial response
             await ctx.respond(f"🔑 Generating keypair with prefix `{hex_prefix}`... This may take a moment.", flags=hikari.MessageFlag.EPHEMERAL)
 
-            # Import keygen modules
+            key_info = None
+
+            # Prefer Rust mc-keygen (meshcore-utils) if available
+            key_info = await _run_rust_keygen(hex_prefix, timeout_sec=90)
+            if key_info:
+                attempts = key_info.get("attempts", 0)
+                elapsed = key_info.get("elapsed_secs", 0)
+                kps = key_info.get("keys_per_sec", 0)
+                elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed // 60)}m {elapsed % 60:.0f}s"
+                stats = f"✓ Match found! {attempts:,} attempts in {elapsed_str} ({kps:,} keys/sec)"
+                message = (
+                    f"**Public key:**  `{key_info['public_key']}`\n"
+                    f"**Private key:** `{key_info['private_key']}`"
+                )
+                await ctx.interaction.edit_initial_response(message)
+                return
+
+            # Fallback to Python meshcore_keygen
             try:
                 from meshcore_keygen import VanityConfig, VanityMode, MeshCoreKeyGenerator
             except ImportError as e:
                 logger.error(f"Error importing meshcore_keygen: {e}")
-                await ctx.interaction.edit_initial_response(f"{CROSS} Error: Could not import key generator module.")
+                await ctx.interaction.edit_initial_response(
+                    f"{CROSS} No key generator available. Build the Rust keygen with `cargo build --release` in meshcore-utils/, or install the Python meshcore_keygen module."
+                )
                 return
 
-            # Run key generation in executor to avoid blocking
             def generate_key():
                 config = VanityConfig(
                     mode=VanityMode.PREFIX,
                     target_prefix=hex_prefix,
-                    max_time=90,  # 90 second timeout
-                    max_iterations=100000000,  # 100M keys max
-                    num_workers=2,  # Use fewer workers for Discord bot
-                    batch_size=100000,  # 100K batch size
-                    health_check=False,  # Disable health check for faster generation
-                    verbose=False  # Disable verbose output
+                    max_time=90,
+                    max_iterations=100000000,
+                    num_workers=2,
+                    batch_size=100000,
+                    health_check=False,
+                    verbose=False
                 )
                 generator = MeshCoreKeyGenerator()
                 return generator.generate_vanity_key(config)
 
-            # Run in thread pool executor
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as executor:
                 key_info = await loop.run_in_executor(executor, generate_key)
 
             if key_info:
-                # Format output as requested
-                message = f"Public key: {key_info.public_hex}\nPrivate key: {key_info.private_hex}"
+                message = (
+                    f"**Public key:**  `{key_info.public_hex}`\n"
+                    f"**Private key:** `{key_info.private_hex}`"
+                )
                 await ctx.interaction.edit_initial_response(message)
             else:
                 await ctx.interaction.edit_initial_response(f"{CROSS} Could not generate key with prefix `{hex_prefix}` within the time limit. Try a shorter prefix or try again.")
@@ -569,233 +647,233 @@ class KeygenCommand(lightbulb.SlashCommand, name="keygen",
                 await ctx.respond(f"{CROSS} Error generating keypair: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
-@client.register()
-class DecodeCommand(lightbulb.SlashCommand, name="decode",
-    description="Decode a raw packet hex string", hooks=[category_check]):
+# @client.register()
+# class DecodeCommand(lightbulb.SlashCommand, name="decode",
+#     description="Decode a raw packet hex string", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Raw packet hex string')
+#     text = lightbulb.string('hex', 'Raw packet hex string')
 
-    @lightbulb.invoke
-    async def invoke(self, ctx: lightbulb.Context):
-        """Decode a raw packet hex string"""
-        try:
-            # Check if hex parameter was provided
-            if self.text is None:
-                await ctx.respond("Please provide a raw packet hex string (e.g., `/decode A1B2C3D4...`)", flags=hikari.MessageFlag.EPHEMERAL)
-                return
+#     @lightbulb.invoke
+#     async def invoke(self, ctx: lightbulb.Context):
+#         """Decode a raw packet hex string"""
+#         try:
+#             # Check if hex parameter was provided
+#             if self.text is None:
+#                 await ctx.respond("Please provide a raw packet hex string (e.g., `/decode A1B2C3D4...`)", flags=hikari.MessageFlag.EPHEMERAL)
+#                 return
 
-            raw_hex = self.text.strip()
+#             raw_hex = self.text.strip()
 
-            # Remove common hex prefixes/separators
-            raw_hex = raw_hex.replace('0x', '').replace('0X', '').replace(' ', '').replace('-', '').replace(':', '')
+#             # Remove common hex prefixes/separators
+#             raw_hex = raw_hex.replace('0x', '').replace('0X', '').replace(' ', '').replace('-', '').replace(':', '')
 
-            # Validate hex format
-            if not raw_hex:
-                await ctx.respond("Empty hex string provided.", flags=hikari.MessageFlag.EPHEMERAL)
-                return
+#             # Validate hex format
+#             if not raw_hex:
+#                 await ctx.respond("Empty hex string provided.", flags=hikari.MessageFlag.EPHEMERAL)
+#                 return
 
-            if not all(c in '0123456789ABCDEFabcdef' for c in raw_hex):
-                await ctx.respond("Invalid hex format. Please provide a valid hex string.", flags=hikari.MessageFlag.EPHEMERAL)
-                return
+#             if not all(c in '0123456789ABCDEFabcdef' for c in raw_hex):
+#                 await ctx.respond("Invalid hex format. Please provide a valid hex string.", flags=hikari.MessageFlag.EPHEMERAL)
+#                 return
 
-            # Import decoder
-            try:
-                from meshcoredecoder import MeshCoreDecoder
-                from meshcoredecoder.crypto import MeshCoreKeyStore
-                from meshcoredecoder.types.crypto import DecryptionOptions
-            except ImportError as e:
-                logger.error(f"Error importing meshcoredecoder: {e}")
-                await ctx.respond(f"{CROSS} Error: Could not import decoder module.", flags=hikari.MessageFlag.EPHEMERAL)
-                return
+#             # Import decoder
+#             try:
+#                 from meshcoredecoder import MeshCoreDecoder
+#                 from meshcoredecoder.crypto import MeshCoreKeyStore
+#                 from meshcoredecoder.types.crypto import DecryptionOptions
+#             except ImportError as e:
+#                 logger.error(f"Error importing meshcoredecoder: {e}")
+#                 await ctx.respond(f"{CROSS} Error: Could not import decoder module.", flags=hikari.MessageFlag.EPHEMERAL)
+#                 return
 
-            # Load channel secrets from secrets.json
-            secrets = load_secrets_from_file()
-            key_store = None
-            options = None
+#             # Load channel secrets from secrets.json
+#             secrets = load_secrets_from_file()
+#             key_store = None
+#             options = None
 
-            if secrets.get('channel_secrets'):
-                # Create key store with channel secrets
-                key_store_data = {
-                    'channel_secrets': secrets['channel_secrets']
-                }
-                key_store = MeshCoreKeyStore(key_store_data)
-                options = DecryptionOptions(key_store=key_store)
+#             if secrets.get('channel_secrets'):
+#                 # Create key store with channel secrets
+#                 key_store_data = {
+#                     'channel_secrets': secrets['channel_secrets']
+#                 }
+#                 key_store = MeshCoreKeyStore(key_store_data)
+#                 options = DecryptionOptions(key_store=key_store)
 
-            # Decode the packet with verification
-            try:
-                if options:
-                    packet = MeshCoreDecoder.decode_with_verification(raw_hex, options)
-                else:
-                    packet = MeshCoreDecoder.decode_with_verification(raw_hex)
-            except Exception as e:
-                await ctx.respond(f"{CROSS} Error decoding packet: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
-                return
+#             # Decode the packet with verification
+#             try:
+#                 if options:
+#                     packet = MeshCoreDecoder.decode_with_verification(raw_hex, options)
+#                 else:
+#                     packet = MeshCoreDecoder.decode_with_verification(raw_hex)
+#             except Exception as e:
+#                 await ctx.respond(f"{CROSS} Error decoding packet: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+#                 return
 
-            # Build response message matching cli.py format
-            message_parts = []
-            message_parts.append("**=== MeshCore Packet Analysis ===**\n")
+#             # Build response message matching cli.py format
+#             message_parts = []
+#             message_parts.append("**=== MeshCore Packet Analysis ===**\n")
 
-            if not packet.is_valid:
-                message_parts.append(f"{CROSS} **Invalid Packet**")
-                if hasattr(packet, 'errors') and packet.errors:
-                    for error in packet.errors:
-                        message_parts.append(f"   {error}")
-            else:
-                message_parts.append(f"{CHECK} **Valid Packet**")
+#             if not packet.is_valid:
+#                 message_parts.append(f"{CROSS} **Invalid Packet**")
+#                 if hasattr(packet, 'errors') and packet.errors:
+#                     for error in packet.errors:
+#                         message_parts.append(f"   {error}")
+#             else:
+#                 message_parts.append(f"{CHECK} **Valid Packet**")
 
-            # Packet-level information (matching cli.py)
-            if hasattr(packet, 'message_hash') and packet.message_hash:
-                message_parts.append(f"**Message Hash:** {packet.message_hash}")
-            if hasattr(packet, 'route_type'):
-                message_parts.append(f"**Route Type:** {get_route_type_name(packet.route_type)}")
-            if hasattr(packet, 'payload_type'):
-                payload_type_name = get_payload_type_name(packet.payload_type) if packet.is_valid else 'Invalid'
-                message_parts.append(f"**Payload Type:** {payload_type_name}")
-            if hasattr(packet, 'total_bytes'):
-                message_parts.append(f"**Total Bytes:** {packet.total_bytes}")
+#             # Packet-level information (matching cli.py)
+#             if hasattr(packet, 'message_hash') and packet.message_hash:
+#                 message_parts.append(f"**Message Hash:** {packet.message_hash}")
+#             if hasattr(packet, 'route_type'):
+#                 message_parts.append(f"**Route Type:** {get_route_type_name(packet.route_type)}")
+#             if hasattr(packet, 'payload_type'):
+#                 payload_type_name = get_payload_type_name(packet.payload_type) if packet.is_valid else 'Invalid'
+#                 message_parts.append(f"**Payload Type:** {payload_type_name}")
+#             if hasattr(packet, 'total_bytes'):
+#                 message_parts.append(f"**Total Bytes:** {packet.total_bytes}")
 
-            if hasattr(packet, 'path') and packet.path and len(packet.path) > 0:
-                message_parts.append(f"**Path:** {' → '.join(packet.path)}")
+#             if hasattr(packet, 'path') and packet.path and len(packet.path) > 0:
+#                 message_parts.append(f"**Path:** {' → '.join(packet.path)}")
 
-            # Show payload details (matching cli.py show_payload_details function)
-            decoded = packet.payload.get('decoded') if packet.payload else None
-            if decoded:
-                message_parts.append(f"\n**=== Payload Details ===**")
-                await _format_payload_details(decoded, message_parts)
+#             # Show payload details (matching cli.py show_payload_details function)
+#             decoded = packet.payload.get('decoded') if packet.payload else None
+#             if decoded:
+#                 message_parts.append(f"\n**=== Payload Details ===**")
+#                 await _format_payload_details(decoded, message_parts)
 
-            if not packet.is_valid:
-                message_parts.append(f"\n{CROSS} Packet validation failed")
+#             if not packet.is_valid:
+#                 message_parts.append(f"\n{CROSS} Packet validation failed")
 
-            message = "\n".join(message_parts)
-            await ctx.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
+#             message = "\n".join(message_parts)
+#             await ctx.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
 
-        except Exception as e:
-            logger.error(f"Error in decode command: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            await ctx.respond(f"{CROSS} Error decoding packet: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+#         except Exception as e:
+#             logger.error(f"Error in decode command: {e}")
+#             import traceback
+#             logger.error(traceback.format_exc())
+#             await ctx.respond(f"{CROSS} Error decoding packet: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
-@client.register()
-class SecretCommand(lightbulb.SlashCommand, name="secret",
-    description="Manage channel secrets for decrypting GroupText payloads"):
+# @client.register()
+# class SecretCommand(lightbulb.SlashCommand, name="secret",
+#     description="Manage channel secrets for decrypting GroupText payloads"):
 
-    secret = lightbulb.string('key', 'Channel secret hex key (required for add/remove)', default=None)
-    action = lightbulb.string('action', 'Action: add, list, or remove', default="add")
+#     secret = lightbulb.string('key', 'Channel secret hex key (required for add/remove)', default=None)
+#     action = lightbulb.string('action', 'Action: add, list, or remove', default="add")
 
-    @lightbulb.invoke
-    async def invoke(self, ctx: lightbulb.Context):
-        """Manage channel secrets for decrypting GroupText payloads"""
-        try:
-            # Check if user is bot owner
-            bot_owner_id = None
-            try:
-                owner_id_str = config.get("discord", "bot_owner_id", fallback=None)
-                if owner_id_str:
-                    bot_owner_id = int(owner_id_str)
-            except (ValueError, AttributeError):
-                pass
+#     @lightbulb.invoke
+#     async def invoke(self, ctx: lightbulb.Context):
+#         """Manage channel secrets for decrypting GroupText payloads"""
+#         try:
+#             # Check if user is bot owner
+#             bot_owner_id = None
+#             try:
+#                 owner_id_str = config.get("discord", "bot_owner_id", fallback=None)
+#                 if owner_id_str:
+#                     bot_owner_id = int(owner_id_str)
+#             except (ValueError, AttributeError):
+#                 pass
 
-            if not ctx.member or not bot_owner_id or ctx.member.user.id != bot_owner_id:
-                await ctx.respond(f"{CROSS} Only the bot owner can manage secrets.", flags=hikari.MessageFlag.EPHEMERAL)
-                return
+#             if not ctx.member or not bot_owner_id or ctx.member.user.id != bot_owner_id:
+#                 await ctx.respond(f"{CROSS} Only the bot owner can manage secrets.", flags=hikari.MessageFlag.EPHEMERAL)
+#                 return
 
-            action = self.action.lower() if self.action else "add"
-            secrets_file = "secrets.json"
+#             action = self.action.lower() if self.action else "add"
+#             secrets_file = "secrets.json"
 
-            if action == "add":
-                if not self.secret:
-                    await ctx.respond("Please provide a channel secret hex key to add.", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
+#             if action == "add":
+#                 if not self.secret:
+#                     await ctx.respond("Please provide a channel secret hex key to add.", flags=hikari.MessageFlag.EPHEMERAL)
+#                     return
 
-                # Clean up hex string
-                secret_hex = self.secret.strip().replace(' ', '').replace('0x', '').replace('0X', '').replace('-', '').replace(':', '')
+#                 # Clean up hex string
+#                 secret_hex = self.secret.strip().replace(' ', '').replace('0x', '').replace('0X', '').replace('-', '').replace(':', '')
 
-                # Validate hex format
-                if not secret_hex:
-                    await ctx.respond("Empty secret provided.", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
+#                 # Validate hex format
+#                 if not secret_hex:
+#                     await ctx.respond("Empty secret provided.", flags=hikari.MessageFlag.EPHEMERAL)
+#                     return
 
-                if not all(c in '0123456789ABCDEFabcdef' for c in secret_hex):
-                    await ctx.respond("Invalid hex format. Please provide a valid hex string.", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
+#                 if not all(c in '0123456789ABCDEFabcdef' for c in secret_hex):
+#                     await ctx.respond("Invalid hex format. Please provide a valid hex string.", flags=hikari.MessageFlag.EPHEMERAL)
+#                     return
 
-                # Load existing secrets
-                secrets = load_secrets_from_file(secrets_file)
-                if 'channel_secrets' not in secrets:
-                    secrets['channel_secrets'] = []
+#                 # Load existing secrets
+#                 secrets = load_secrets_from_file(secrets_file)
+#                 if 'channel_secrets' not in secrets:
+#                     secrets['channel_secrets'] = []
 
-                # Check if secret already exists
-                if secret_hex.upper() in [s.upper() for s in secrets['channel_secrets']]:
-                    await ctx.respond(f"{CROSS} This secret already exists in the secrets file.", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
+#                 # Check if secret already exists
+#                 if secret_hex.upper() in [s.upper() for s in secrets['channel_secrets']]:
+#                     await ctx.respond(f"{CROSS} This secret already exists in the secrets file.", flags=hikari.MessageFlag.EPHEMERAL)
+#                     return
 
-                # Add new secret
-                secrets['channel_secrets'].append(secret_hex.upper())
+#                 # Add new secret
+#                 secrets['channel_secrets'].append(secret_hex.upper())
 
-                # Save to file
-                if save_secrets_to_file(secrets, secrets_file):
-                    await ctx.respond(f"{CHECK} Channel secret added successfully. ({len(secrets['channel_secrets'])} total secrets)", flags=hikari.MessageFlag.EPHEMERAL)
-                else:
-                    await ctx.respond(f"{CROSS} Error saving secret to file.", flags=hikari.MessageFlag.EPHEMERAL)
+#                 # Save to file
+#                 if save_secrets_to_file(secrets, secrets_file):
+#                     await ctx.respond(f"{CHECK} Channel secret added successfully. ({len(secrets['channel_secrets'])} total secrets)", flags=hikari.MessageFlag.EPHEMERAL)
+#                 else:
+#                     await ctx.respond(f"{CROSS} Error saving secret to file.", flags=hikari.MessageFlag.EPHEMERAL)
 
-            elif action == "list":
-                # Load secrets
-                secrets = load_secrets_from_file(secrets_file)
-                channel_secrets = secrets.get('channel_secrets', [])
+#             elif action == "list":
+#                 # Load secrets
+#                 secrets = load_secrets_from_file(secrets_file)
+#                 channel_secrets = secrets.get('channel_secrets', [])
 
-                if not channel_secrets:
-                    await ctx.respond("No channel secrets found in secrets.json", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
+#                 if not channel_secrets:
+#                     await ctx.respond("No channel secrets found in secrets.json", flags=hikari.MessageFlag.EPHEMERAL)
+#                     return
 
-                # Show count and partial info (for security, don't show full keys)
-                message_parts = [f"**Channel Secrets:** {len(channel_secrets)} total\n"]
-                for i, secret in enumerate(channel_secrets, 1):
-                    # Show first 8 and last 8 characters for identification
-                    if len(secret) > 16:
-                        masked = f"{secret[:8]}...{secret[-8:]}"
-                    else:
-                        masked = secret[:8] + "..."
-                    message_parts.append(f"{i}. `{masked}`")
+#                 # Show count and partial info (for security, don't show full keys)
+#                 message_parts = [f"**Channel Secrets:** {len(channel_secrets)} total\n"]
+#                 for i, secret in enumerate(channel_secrets, 1):
+#                     # Show first 8 and last 8 characters for identification
+#                     if len(secret) > 16:
+#                         masked = f"{secret[:8]}...{secret[-8:]}"
+#                     else:
+#                         masked = secret[:8] + "..."
+#                     message_parts.append(f"{i}. `{masked}`")
 
-                await ctx.respond("\n".join(message_parts), flags=hikari.MessageFlag.EPHEMERAL)
+#                 await ctx.respond("\n".join(message_parts), flags=hikari.MessageFlag.EPHEMERAL)
 
-            elif action == "remove":
-                if not self.secret:
-                    await ctx.respond("Please provide a channel secret hex key to remove (or use partial match).", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
+#             elif action == "remove":
+#                 if not self.secret:
+#                     await ctx.respond("Please provide a channel secret hex key to remove (or use partial match).", flags=hikari.MessageFlag.EPHEMERAL)
+#                     return
 
-                # Clean up hex string
-                secret_hex = self.secret.strip().replace(' ', '').replace('0x', '').replace('0X', '').replace('-', '').replace(':', '').upper()
+#                 # Clean up hex string
+#                 secret_hex = self.secret.strip().replace(' ', '').replace('0x', '').replace('0X', '').replace('-', '').replace(':', '').upper()
 
-                # Load existing secrets
-                secrets = load_secrets_from_file(secrets_file)
-                if 'channel_secrets' not in secrets:
-                    secrets['channel_secrets'] = []
+#                 # Load existing secrets
+#                 secrets = load_secrets_from_file(secrets_file)
+#                 if 'channel_secrets' not in secrets:
+#                     secrets['channel_secrets'] = []
 
-                # Find and remove matching secret
-                original_count = len(secrets['channel_secrets'])
-                secrets['channel_secrets'] = [s for s in secrets['channel_secrets'] if secret_hex not in s.upper()]
+#                 # Find and remove matching secret
+#                 original_count = len(secrets['channel_secrets'])
+#                 secrets['channel_secrets'] = [s for s in secrets['channel_secrets'] if secret_hex not in s.upper()]
 
-                if len(secrets['channel_secrets']) == original_count:
-                    await ctx.respond(f"{CROSS} Secret not found in secrets file.", flags=hikari.MessageFlag.EPHEMERAL)
-                    return
+#                 if len(secrets['channel_secrets']) == original_count:
+#                     await ctx.respond(f"{CROSS} Secret not found in secrets file.", flags=hikari.MessageFlag.EPHEMERAL)
+#                     return
 
-                # Save to file
-                if save_secrets_to_file(secrets, secrets_file):
-                    removed_count = original_count - len(secrets['channel_secrets'])
-                    await ctx.respond(f"{CHECK} Removed {removed_count} secret(s). ({len(secrets['channel_secrets'])} remaining)", flags=hikari.MessageFlag.EPHEMERAL)
-                else:
-                    await ctx.respond(f"{CROSS} Error saving secrets file.", flags=hikari.MessageFlag.EPHEMERAL)
+#                 # Save to file
+#                 if save_secrets_to_file(secrets, secrets_file):
+#                     removed_count = original_count - len(secrets['channel_secrets'])
+#                     await ctx.respond(f"{CHECK} Removed {removed_count} secret(s). ({len(secrets['channel_secrets'])} remaining)", flags=hikari.MessageFlag.EPHEMERAL)
+#                 else:
+#                     await ctx.respond(f"{CROSS} Error saving secrets file.", flags=hikari.MessageFlag.EPHEMERAL)
 
-            else:
-                await ctx.respond(f"{CROSS} Invalid action. Use 'add', 'list', or 'remove'.", flags=hikari.MessageFlag.EPHEMERAL)
+#             else:
+#                 await ctx.respond(f"{CROSS} Invalid action. Use 'add', 'list', or 'remove'.", flags=hikari.MessageFlag.EPHEMERAL)
 
-        except Exception as e:
-            logger.error(f"Error in secret command: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            await ctx.respond(f"{CROSS} Error managing secrets: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
+#         except Exception as e:
+#             logger.error(f"Error in secret command: {e}")
+#             import traceback
+#             logger.error(traceback.format_exc())
+#             await ctx.respond(f"{CROSS} Error managing secrets: {str(e)}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 @client.register()
@@ -822,7 +900,6 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/claim <hex>` - Claim ownership of a repeater
 `/unclaim <hex>` - Unclaim ownership of a repeater (owner or bot owner only)
 `/keygen <prefix>` - Generate a MeshCore keypair with a specific prefix
-`/decode <hex>` - Decode a raw packet hex string
 `/help` - Show this help message
 """
 
