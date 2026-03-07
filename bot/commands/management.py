@@ -15,7 +15,7 @@ import os
 from datetime import datetime
 import hikari
 import lightbulb
-from bot.core import client, config, logger, CHECK, CROSS, EMOJIS, category_check, pending_remove_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections
+from bot.core import client, config, logger, CHECK, CROSS, EMOJIS, category_check, pending_remove_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections, pending_release_selections
 from bot.utils import (
     get_nodes_data_for_context,
     get_repeater_for_context,
@@ -155,18 +155,17 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
 class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
     description="Release a hex prefix for a repeater", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1B2)')
+    text = lightbulb.string('hex', 'Hex prefix (2 chars e.g. A1, or 4 chars e.g. A1B2)')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
-        """Release a hex prefix for a repeater"""
+        """Release a hex prefix for a repeater. Use 2 chars to match by first byte, or 4 for exact."""
         try:
-            hex_prefix = self.text.upper().strip()
-
-            # Validate hex format
-            if len(hex_prefix) != 4 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 4 characters (0000-FFFF), e.g., `A1B2`", flags=hikari.MessageFlag.EPHEMERAL)
+            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            if not ok:
+                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
+            hex_input = hex_prefix_or_err  # 2 or 4 chars
 
             # Get bot owner ID from config
             bot_owner_id = None
@@ -192,17 +191,62 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             with open(reserved_nodes_file, 'r') as f:
                 reserved_data = json.load(f)
 
-            # Find the reserved node entry
-            reserved_node = None
-            for node in reserved_data.get('data', []):
-                if node.get('prefix', '').upper() == hex_prefix:
-                    reserved_node = node
-                    break
+            # Find matching reserved node(s): exact match for 4 chars, or prefix match for 2 chars (includes 2-char reservations)
+            data_list = reserved_data.get('data', [])
+            if len(hex_input) == 4:
+                matches = [n for n in data_list if (n.get('prefix') or '').upper() == hex_input]
+            else:
+                # Match prefixes that start with hex_input (e.g. A1 matches A1, A1B2, A1C3)
+                matches = [n for n in data_list if ((n.get('prefix') or '').upper()).startswith(hex_input)]
 
-            if not reserved_node:
-                await ctx.respond(f"{CROSS} {hex_prefix} is not reserved for a repeater",
+            if not matches:
+                await ctx.respond(f"{CROSS} No reservation found for hex prefix {hex_input}.",
                     flags=hikari.MessageFlag.EPHEMERAL)
                 return
+
+            # If multiple matches, show select menu so user can pick which to release
+            if len(matches) > 1:
+                options = []
+                for i, node in enumerate(matches):
+                    prefix = node.get('prefix', '') or '????'
+                    name = (node.get('name') or 'Unknown')[:45]
+                    display_name = (node.get('display_name') or node.get('username') or 'Unknown')[:30]
+                    label = f"{prefix} - {name}"
+                    description = f"Reserved by {display_name}"[:100]
+                    options.append(
+                        hikari.SelectMenuOption(
+                            label=label[:100],
+                            description=description,
+                            value=str(i),
+                            emoji=EMOJIS[i] if i < len(EMOJIS) else None,
+                            is_default=False
+                        )
+                    )
+                custom_id = f"release_select_{hex_input}_{ctx.interaction.id}"
+                pending_release_selections[custom_id] = (matches, reserved_nodes_file, bot_owner_id)
+                action_row_builder = hikari.impl.MessageActionRowBuilder()
+                select_menu_builder = action_row_builder.add_text_menu(
+                    custom_id,
+                    placeholder="Select a reservation to release",
+                    min_values=1,
+                    max_values=1
+                )
+                for option in options:
+                    select_menu_builder.add_option(
+                        option.label,
+                        option.value,
+                        description=option.description,
+                        emoji=option.emoji,
+                        is_default=option.is_default
+                    )
+                await ctx.respond(
+                    f"Found {len(matches)} reservation(s) for **{hex_input}**. Select one to release:",
+                    components=[action_row_builder]
+                )
+                return
+
+            reserved_node = matches[0]
+            hex_prefix = (reserved_node.get('prefix') or '').upper()
 
             # Check if user is the bot owner
             is_bot_owner = bot_owner_id and user_id == bot_owner_id

@@ -4,19 +4,21 @@ Bot Utilities Module
 Contains helper functions for file paths, channel management, context helpers,
 emoji management, and node utilities.
 
-- get_category_id_from_context: Get the category ID from the context where the command was invoked.
-- get_nodes_file_for_category: Get the nodes file name based on category ID, with config mapping support.
-- get_reserved_nodes_file_for_category: Get the reserved nodes file name based on category ID, with config mapping support.
-- get_removed_nodes_file_for_category: Get the removed nodes file name based on category ID, with config mapping support.
-- get_owner_file_for_category: Get the owner file name based on category ID, with config mapping support.
-- get_reserved_nodes_file_for_context: Get reserved nodes file name based on the category where the command was invoked.
-- get_removed_nodes_file_for_context: Get removed nodes file name based on the category where the command was invoked.
-- get_owner_file_for_context: Get owner file name based on the category where the command was invoked.
-- get_nodes_data_for_context: Get nodes data based on the category where the command was invoked.
+- get_channel_id_from_context: Get the channel ID from the context where the command was invoked.
+- get_nodes_file_for_channel: Get the nodes file name based on channel ID, with config mapping support.
+- get_reserved_nodes_file_for_channel: Get the reserved nodes file name based on channel ID, with config mapping support.
+- get_off_reserved_nodes_file_for_channel: Get the offReserved nodes file name based on channel ID (derived from nodes_file).
+- get_removed_nodes_file_for_channel: Get the removed nodes file name based on channel ID, with config mapping support.
+- get_owner_file_for_channel: Get the owner file name based on channel ID, with config mapping support.
+- get_reserved_nodes_file_for_context: Get reserved nodes file name based on the channel where the command was invoked.
+- get_off_reserved_nodes_file_for_context: Get offReserved nodes file name based on the channel where the command was invoked.
+- get_removed_nodes_file_for_context: Get removed nodes file name based on the channel where the command was invoked.
+- get_owner_file_for_context: Get owner file name based on the channel where the command was invoked.
+- get_nodes_data_for_context: Get nodes data based on the channel where the command was invoked.
 - validate_hex_prefix: Validate hex prefix (2 or 4 chars); returns (ok, normalized_hex or error_msg).
-- get_repeater_for_context: Get repeater data based on the category where the command was invoked, filtered by prefix (2 or 4 hex chars) and days.
-- get_extract_device_types_for_context: Extract device types based on the category where the command was invoked.
-- get_unused_keys_for_context: Get unused keys based on the category where the command was invoked, excluding removed and reserved nodes.
+- get_repeater_for_context: Get repeater data based on the channel where the command was invoked, filtered by prefix (2 or 4 hex chars) and days.
+- get_extract_device_types_for_context: Extract device types based on the channel where the command was invoked.
+- get_unused_keys_for_context: Get unused keys based on the channel where the command was invoked, excluding removed and reserved nodes.
 - initialize_emojis: Pre-load emojis when bot starts, with logging of available emojis for debugging.
 - get_server_emoji: Get a Discord server emoji by name, with caching and config override support.
 - normalize_node: Normalize node field names to handle both 'role'/'device_role' and 'last_heard'/'last_seen'.
@@ -76,6 +78,19 @@ def get_reserved_nodes_file_for_channel(channel_id: int | None) -> str:
     return "reservedNodes.json"
 
 
+def get_off_reserved_nodes_file_for_channel(channel_id: int | None) -> str:
+    """Get the offReserved nodes file name based on channel ID.
+
+    Uses the channels from the [discord] section. Defaults to 'offReserved.json'.
+    """
+    if channel_id is None:
+        return "offReserved.json"
+
+    # Always use default offReserved.json
+    logger.debug(f"Using default offReserved.json for channel {channel_id}")
+    return "offReserved.json"
+
+
 def get_removed_nodes_file_for_channel(channel_id: int | None) -> str:
     """Get the removed nodes file name based on channel ID.
 
@@ -106,6 +121,12 @@ async def get_reserved_nodes_file_for_context(ctx) -> str:
     """Get reserved nodes file name based on the channel where the command was invoked"""
     channel_id = await get_channel_id_from_context(ctx)
     return get_reserved_nodes_file_for_channel(channel_id)
+
+
+async def get_off_reserved_nodes_file_for_context(ctx) -> str:
+    """Get offReserved nodes file name based on the channel where the command was invoked"""
+    channel_id = await get_channel_id_from_context(ctx)
+    return get_off_reserved_nodes_file_for_channel(channel_id)
 
 
 async def get_removed_nodes_file_for_context(ctx) -> str:
