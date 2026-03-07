@@ -40,6 +40,7 @@ pending_qr_selections = {}
 pending_own_selections = {}
 pending_unclaim_selections = {}
 pending_owner_selections = {}
+pending_release_selections = {}
 known_node_keys = set()
 
 # Semaphore for purge operations

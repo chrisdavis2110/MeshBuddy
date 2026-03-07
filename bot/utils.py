@@ -7,6 +7,7 @@ emoji management, and node utilities.
 - get_category_id_from_context: Get the category ID from the context where the command was invoked.
 - get_nodes_file_for_category: Get the nodes file name based on category ID, with config mapping support.
 - get_reserved_nodes_file_for_category: Get the reserved nodes file name based on category ID, with config mapping support.
+- get_off_reserved_nodes_file_for_category: Get the offReserved nodes file name based on category ID (derived from nodes_file).
 - get_removed_nodes_file_for_category: Get the removed nodes file name based on category ID, with config mapping support.
 - get_owner_file_for_category: Get the owner file name based on category ID, with config mapping support.
 - get_reserved_nodes_file_for_context: Get reserved nodes file name based on the category where the command was invoked.
@@ -117,6 +118,23 @@ def get_reserved_nodes_file_for_category(category_id: int | None) -> str:
     # Default to reservedNodes.json if no mapping found
     logger.debug(f"No category-specific reserved nodes file found for category {category_id}, using default reservedNodes.json")
     return "reservedNodes.json"
+
+
+def get_off_reserved_nodes_file_for_category(category_id: int | None) -> str:
+    """Get the offReserved nodes file name based on category ID.
+
+    Derived from nodes_file (e.g. nodes_socal.json -> offReserved_socal.json).
+    Matches node_watcher logic. If category_id is None or nodes_file is default,
+    returns 'offReserved.json'.
+    """
+    if category_id is None:
+        return "offReserved.json"
+    nodes_file = get_nodes_file_for_category(category_id)
+    basename = os.path.basename(nodes_file)
+    if basename.startswith("nodes_") and basename.endswith(".json"):
+        category_name = basename[6:-5]  # strip "nodes_" and ".json"
+        return f"offReserved_{category_name}.json"
+    return "offReserved.json"
 
 
 def get_removed_nodes_file_for_category(category_id: int | None) -> str:

@@ -13,8 +13,10 @@ import json
 import os
 import asyncio
 import threading
+from datetime import datetime
 import hikari
-from bot.core import bot, config, logger, CROSS, pending_remove_selections, pending_qr_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections
+from bot.core import bot, config, logger, CHECK, CROSS, pending_remove_selections, pending_qr_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections, pending_release_selections
+from bot.command_history import command_history
 from bot.utils import get_owner_file_for_category, get_server_emoji
 from bot.helpers import (
     generate_and_send_qr,
@@ -127,6 +129,75 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
                 )
+
+    # Check if this is a release selection
+    elif custom_id and custom_id.startswith("release_select_"):
+        if custom_id in pending_release_selections:
+            payload = pending_release_selections[custom_id]
+            matches, reserved_nodes_file, bot_owner_id = payload
+            if not interaction.values or len(interaction.values) == 0:
+                await interaction.create_initial_response(
+                    hikari.ResponseType.MESSAGE_UPDATE,
+                    f"{CROSS} No selection made",
+                    components=None,
+                    flags=hikari.MessageFlag.EPHEMERAL
+                )
+                del pending_release_selections[custom_id]
+            else:
+                selected_index = int(interaction.values[0])
+                selected_node = matches[selected_index]
+                hex_prefix = (selected_node.get("prefix") or "").upper()
+                user_id = interaction.user.id if interaction.user else None
+                if not user_id:
+                    await interaction.create_initial_response(
+                        hikari.ResponseType.MESSAGE_UPDATE,
+                        f"{CROSS} Unable to identify user",
+                        components=None,
+                        flags=hikari.MessageFlag.EPHEMERAL
+                    )
+                    del pending_release_selections[custom_id]
+                else:
+                    is_bot_owner = bot_owner_id and user_id == bot_owner_id
+                    reserved_user_id = selected_node.get("user_id")
+                    is_reserver = reserved_user_id and int(reserved_user_id) == user_id
+                    if not is_bot_owner and not is_reserver:
+                        display_name = selected_node.get("display_name") or selected_node.get("username") or "Unknown"
+                        await interaction.create_initial_response(
+                            hikari.ResponseType.MESSAGE_UPDATE,
+                            f"{CROSS} Only the person who reserved {hex_prefix} ({display_name}) or the bot owner can release it.",
+                            components=None,
+                            flags=hikari.MessageFlag.EPHEMERAL
+                        )
+                        del pending_release_selections[custom_id]
+                    else:
+                        try:
+                            with open(reserved_nodes_file, "r") as f:
+                                reserved_data = json.load(f)
+                            reserved_data["data"] = [
+                                n for n in reserved_data.get("data", [])
+                                if (n.get("prefix") or "").upper() != hex_prefix
+                            ]
+                            reserved_data["timestamp"] = datetime.now().isoformat()
+                            with open(reserved_nodes_file, "w") as f:
+                                json.dump(reserved_data, f, indent=2)
+                            channel = await bot.rest.fetch_channel(interaction.channel_id)
+                            category_id = getattr(channel, "parent_id", None)
+                            if category_id:
+                                command_history.mark_reservation_released(category_id)
+                            await interaction.create_initial_response(
+                                hikari.ResponseType.MESSAGE_UPDATE,
+                                f"{CHECK} Released hex prefix {hex_prefix}",
+                                components=None
+                            )
+                        except Exception as e:
+                            logger.error(f"Error processing release selection: {e}")
+                            await interaction.create_initial_response(
+                                hikari.ResponseType.MESSAGE_UPDATE,
+                                f"{CROSS} Error releasing: {str(e)}",
+                                components=None,
+                                flags=hikari.MessageFlag.EPHEMERAL
+                            )
+                        del pending_release_selections[custom_id]
 
     # Check if this is a QR code selection
     elif custom_id and custom_id.startswith("qr_select_"):
