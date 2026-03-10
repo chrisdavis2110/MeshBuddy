@@ -376,16 +376,32 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
         try:
             unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
 
+            prefix_length = await get_prefix_length_for_context(ctx)
+
             if not unused_keys:
-                # Determine total keyspace for this category
-                prefix_length = await get_prefix_length_for_context(ctx)
                 total_keys = 16 ** prefix_length
                 low = "0" * prefix_length
                 high = "F" * prefix_length
                 await ctx.respond(f"All {total_keys} keys ({low}-{high}) are currently in use!")
                 return
 
-            # If no hex argument provided, show count and prompt for hex
+            # When hash_size=1 (prefix_length 2), show all open keys without requiring a hex parameter
+            if self.hex_char is None and prefix_length == 2:
+                grouped_by_tens = {}
+                for key in unused_keys:
+                    first = key[0].upper()
+                    grouped_by_tens.setdefault(first, []).append(key)
+                lines = []
+                key_width = 2
+                for first in sorted(grouped_by_tens.keys(), key=lambda c: int(c, 16)):
+                    keys_in_group = sorted(grouped_by_tens[first], key=lambda x: int(x, 16))
+                    lines.append(" ".join(f"{k:>{key_width}}" for k in keys_in_group))
+                header = "Unused Keys:"
+                footer = f"Total: {len(unused_keys)} keys"
+                await send_long_message(ctx, header, lines, footer)
+                return
+
+            # If no hex argument provided (and keyspace > 1 byte), show count and prompt for hex
             if self.hex_char is None:
                 count = len(unused_keys)
                 await ctx.respond(f"There are **{count}** unused keys. Use `/open <hex>` to see keys starting with that hex byte (00-FF).")
@@ -407,42 +423,33 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
             # Sort the filtered keys numerically
             filtered_keys.sort(key=lambda x: int(x, 16))
 
-            # Group keys by the first character of the second byte (3rd character overall)
+            # Group keys by the first character of the second byte (3rd character overall) when prefix_length >= 4
             grouped_keys = {}
             for key in filtered_keys:
-                third_char = key[2] if len(key) >= 3 else ''  # First char of second byte
+                third_char = key[2] if len(key) >= 3 else ''
                 if third_char not in grouped_keys:
                     grouped_keys[third_char] = []
                 grouped_keys[third_char].append(key)
 
             # Format keys, breaking long lines into chunks to fit Discord's 2000 char limit
             lines = []
-            max_line_length = 1800  # Leave room for header/footer
+            max_line_length = 1800
+            key_width = max(4, prefix_length)
 
-            # Process each group (each group starts a new line)
             for third_char in sorted(grouped_keys.keys()):
                 keys_in_group = grouped_keys[third_char]
 
-                # Build line in chunks to avoid exceeding Discord's limit
                 current_line = []
-
                 for key in keys_in_group:
-                    key_str = f"{key:>4}"
-
-                    # Calculate what the line would look like with this key added
+                    key_str = f"{key:>{key_width}}"
                     test_line = current_line + [key_str]
                     test_line_str = " ".join(test_line)
-
-                    # Check if adding this key would exceed the limit
                     if current_line and len(test_line_str) > max_line_length:
-                        # Save current line and start a new one
                         lines.append(" ".join(current_line))
                         current_line = [key_str]
                     else:
-                        # Add to current line
                         current_line.append(key_str)
 
-                # Add any remaining keys as a line
                 if current_line:
                     lines.append(" ".join(current_line))
 
