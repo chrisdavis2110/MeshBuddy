@@ -23,6 +23,7 @@ from bot.utils import (
     get_extract_device_types_for_context,
     get_unused_keys_for_context,
     get_category_id_from_context,
+    get_prefix_length_for_context,
     normalize_node,
     is_node_removed,
     extract_prefix_for_sort
@@ -84,8 +85,9 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
 
             # Add active repeaters
             if repeaters:
+                prefix_length = await get_prefix_length_for_context(ctx)
                 for contact in repeaters:
-                    prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
+                    prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else '????'
                     name = contact.get('name', 'Unknown')
                     active_prefixes.add(prefix.upper())
                     last_seen = contact.get('last_seen')
@@ -181,8 +183,9 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
             if repeaters:
                 lines = []
                 now = datetime.now().astimezone()
+                prefix_length = await get_prefix_length_for_context(ctx)
                 for contact in repeaters:
-                    prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
+                    prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else '????'
                     name = contact.get('name', 'Unknown')
                     last_seen = contact.get('last_seen')
                     try:
@@ -258,10 +261,11 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
             if repeaters:
                 # Group repeaters by prefix
                 by_prefix = {}
+                prefix_length = await get_prefix_length_for_context(ctx)
                 for repeater in repeaters:
                     public_key = (repeater.get('public_key', '').upper() if repeater.get('public_key') else '')
                     if public_key:
-                        prefix = public_key[:4]
+                        prefix = public_key[:prefix_length]
                         by_prefix.setdefault(prefix, []).append(repeater)
 
                 lines = []
@@ -328,7 +332,8 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
                     with open(removed_nodes_file, 'r') as f:
                         removed_data = json.load(f)
                         for node in removed_data.get('data', []):
-                            public_key = node.get('public_key', '')[:4].upper() if node.get('public_key') else ''
+                            prefix_length = await get_prefix_length_for_context(ctx)
+                            public_key = node.get('public_key', '')[:prefix_length].upper() if node.get('public_key') else ''
                             name = node.get('name', 'Unknown')
                             if public_key and name and node.get('device_role') == 2:
                                 lines.append(f"{CROSS} {public_key}: {name}")
@@ -429,7 +434,12 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
             unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
 
             if not unused_keys:
-                await ctx.respond("All 65536 keys (0000-FFFF) are currently in use!")
+                # Determine total keyspace for this category
+                prefix_length = await get_prefix_length_for_context(ctx)
+                total_keys = 16 ** prefix_length
+                low = "0" * prefix_length
+                high = "F" * prefix_length
+                await ctx.respond(f"All {total_keys} keys ({low}-{high}) are currently in use!")
                 return
 
             # If no hex argument provided, show count and prompt for hex

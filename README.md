@@ -23,7 +23,7 @@ MeshBuddy is a comprehensive Discord bot that provides real-time monitoring and 
 - **`/list [days]`** - Get a list of active repeaters (default: last 7 days)
 - **`/offline [days]`** - Get a list of offline repeaters (default: last 14 days)
 - **`/dupes [days]`** - Get a list of duplicate repeater prefixes
-- **`/open [days]`** - Get a list of unused hex keys (00-FF)
+- **`/open [days]`** - Get a list of unused hex keys (01-FE)
 - **`/prefix <hex> [days]`** - Check if a specific hex prefix is available
 - **`/stats <hex> [days]`** - Get detailed stats for a specific repeater
 - **`/qr <hex>`** - Generate a QR code for adding a contact
@@ -282,6 +282,15 @@ Create separate categories in Discord and use the category ID as the section hea
 - `owners_file`: The name of the repeater owners file for this section, ie repeaterOwners_socal.json
 - `repeater_channel_id`: The channel ID for the **voice** channel for this section for repeater status info
 - `messenger_channel_id`: The channel ID for the repeater control for this section
+- `hash_size`: Size of the prefix space for this category, in **bytes**. Controls how many hex characters are used for prefixes:
+  - `1` → 1 byte prefixes (2 hex chars)
+  - `2` → 2 byte prefixes (4 hex chars)
+  - `3` → 3 byte prefixes (6 hex chars)
+
+For each category:
+- All list outputs (`/list`, `/offline`, `/dupes`, `/xlist`, `/rlist`) show prefixes using the configured length.
+- `/open` computes unused prefixes within the per-category keyspace (`256^hash_size` total prefixes) and reports counts accordingly.
+- Prefixes whose **first byte** is `00` or `FF` (e.g. `00**`, `00****`, `FF**`, `FF****`) are always excluded from the available set, regardless of `hash_size`.
 
 ## Troubleshooting
 
