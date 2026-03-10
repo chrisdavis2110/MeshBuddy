@@ -96,7 +96,7 @@ def extract_device_types(data=None, device_types=None, days=7, data_dir=None):
     return result
 
 
-def get_companion_list(days=7, data_dir=None):
+def get_companion_list(days=7, data_dir=None, prefix_length=4):
     """Get list of companions using the new extraction function"""
     devices = extract_device_types(device_types=['companions'], days=days, data_dir=data_dir)
 
@@ -108,7 +108,7 @@ def get_companion_list(days=7, data_dir=None):
 
     companion_list = []
     for contact in companions:
-        prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
+        prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else '????'
         name = contact.get('name', 'Unknown')
         print(f"{prefix}: {name}")
         companion_list.append(f"{prefix}: {name}")
@@ -116,7 +116,7 @@ def get_companion_list(days=7, data_dir=None):
     return companion_list
 
 
-def get_room_server_list(days=7, data_dir=None):
+def get_room_server_list(days=7, data_dir=None, prefix_length=4):
     """Get list of room servers using the new extraction function"""
     devices = extract_device_types(device_types=['room_servers'], days=days, data_dir=data_dir)
 
@@ -128,7 +128,7 @@ def get_room_server_list(days=7, data_dir=None):
 
     room_server_list = []
     for contact in room_servers:
-        prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
+        prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else '????'
         name = contact.get('name', 'Unknown')
         print(f"{prefix}: {name}")
         room_server_list.append(f"{prefix}: {name}")
@@ -136,7 +136,7 @@ def get_room_server_list(days=7, data_dir=None):
     return room_server_list
 
 
-def get_repeater_list(days=7, data_dir=None):
+def get_repeater_list(days=7, data_dir=None, prefix_length=4):
     """Get list of repeaters using the new extraction function"""
     devices = extract_device_types(device_types=['repeaters'], days=days, data_dir=data_dir)
 
@@ -148,7 +148,7 @@ def get_repeater_list(days=7, data_dir=None):
 
     repeater_list = []
     for contact in repeaters:
-        prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
+        prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else '????'
         name = contact.get('name', 'Unknown')
         print(f"{prefix}: {name}")
         repeater_list.append(f"{prefix}: {name}")
@@ -156,7 +156,7 @@ def get_repeater_list(days=7, data_dir=None):
     return repeater_list
 
 
-def get_repeater_duplicates(days=7, data_dir=None):
+def get_repeater_duplicates(days=7, data_dir=None, prefix_length=4):
     """Get repeater duplicates using the new extraction function.
     Only shows duplicates if repeaters have the same key prefix but different names.
     If repeaters have the same name, they are ignored."""
@@ -170,7 +170,7 @@ def get_repeater_duplicates(days=7, data_dir=None):
     # Count prefixes to find duplicates
     prefix_count = {}
     for contact in repeaters:
-        prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
+        prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else '????'
         prefix_count[prefix] = prefix_count.get(prefix, 0) + 1
 
     # Find prefixes that appear more than once
@@ -183,7 +183,7 @@ def get_repeater_duplicates(days=7, data_dir=None):
         for prefix in duplicate_prefixes:
             # Get all repeaters with this prefix
             prefix_repeaters = [contact for contact in repeaters
-                              if (contact.get('public_key', '') if contact.get('public_key') else '????')[:4] == prefix]
+                              if (contact.get('public_key', '') if contact.get('public_key') else '????')[:prefix_length] == prefix]
 
             # Check if repeaters have different names
             names = [contact.get('name', 'Unknown') for contact in prefix_repeaters]
@@ -214,7 +214,7 @@ def get_repeater_duplicates(days=7, data_dir=None):
     return duplicate_list
 
 
-def get_repeater_offline(days=14, data_dir=None):
+def get_repeater_offline(days=14, data_dir=None, prefix_length=4):
     """Show repeaters that haven't been heard in 3 days"""
     # Get repeaters that are 3-14 days old
     devices = extract_device_types(device_types=['repeaters'], days=days, data_dir=data_dir)
@@ -233,7 +233,7 @@ def get_repeater_offline(days=14, data_dir=None):
 
         offline_list = []
         for contact in offline_data:
-            prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
+            prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else '????'
             name = contact.get('name', 'Unknown')
             last_seen = contact.get('last_seen', 'Unknown')
 
@@ -258,8 +258,8 @@ def get_repeater_offline(days=14, data_dir=None):
         return []
 
 
-def get_unused_keys(days=7, data_dir=None):
-    """Show which hex keys from 00 to FF are not currently being used"""
+def get_unused_keys(days=7, data_dir=None, prefix_length=4):
+    """Show which hex keys are not currently being used (keyspace size depends on prefix_length: 2=256, 4=65536, 6=16777216)."""
     devices = extract_device_types(device_types=['repeaters'], days=days, data_dir=data_dir)
 
     if devices is None:
@@ -291,7 +291,8 @@ def get_unused_keys(days=7, data_dir=None):
         if (contact_prefix, contact_name) in removed_set:
             continue
 
-        used_keys.add(contact_prefix[:4].upper())  # Convert to uppercase for consistency
+        if contact_prefix:
+            used_keys.add(contact_prefix[:prefix_length].upper())
 
     reserved_set = set()
     reserved_nodes_file = os.path.join(data_dir, "reservedNodes.json") if data_dir else "reservedNodes.json"
@@ -300,38 +301,38 @@ def get_unused_keys(days=7, data_dir=None):
             with open(reserved_nodes_file, 'r') as f:
                 reserved_data = json.load(f)
                 for node in reserved_data.get('data', []):
-                    prefix = node.get('prefix', '').upper()
+                    prefix = (node.get('prefix') or '').upper()
                     if prefix:
-                        reserved_set.add(prefix)
+                        reserved_set.add(prefix[:prefix_length])
         except Exception as e:
             logger.debug(f"Error reading reservedNodes.json: {e}")
 
-    # Generate all possible hex keys from 0000 to FFFF
-    all_possible_keys = set()
-    for i in range(65536):  # 0 to 65535 (0x0000 to 0xFFFF)
-        hex_key = f"{i:04X}"  # Format as uppercase hex with leading zeros
-        all_possible_keys.add(hex_key)
-
-    # Find unused keys
-    unused_keys = all_possible_keys - used_keys - reserved_set - set(['0000', 'FFFF'])  # Exclude '0000' and 'FFFF'
+    # Generate all possible hex keys of prefix_length; exclude prefixes whose first byte is 00 or FF
+    total_keys = 16 ** prefix_length
+    unused_keys = []
+    for i in range(total_keys):
+        hex_key = f"{i:0{prefix_length}X}"
+        if prefix_length >= 2 and hex_key[:2] in ("00", "FF"):
+            continue
+        if prefix_length == 2 and hex_key in ("00", "FF"):
+            continue
+        if hex_key not in used_keys and hex_key not in reserved_set:
+            unused_keys.append(hex_key)
+    unused_keys.sort()
+    low, high = "0" * prefix_length, "F" * prefix_length
 
     if unused_keys:
-        # Sort the unused keys for consistent output
-        sorted_unused_keys = sorted(unused_keys)
-        print(f"Found {len(sorted_unused_keys)} unused keys out of 65536 possible (0000-FFFF):")
-
-        # Display in rows of 16 for better readability
-        for i in range(0, len(sorted_unused_keys), 16):
-            row_keys = sorted_unused_keys[i:i+16]
-            print(" ".join(f"{key:>2}" for key in row_keys))
-
-        return sorted_unused_keys
+        print(f"Found {len(unused_keys)} unused keys (prefix_length={prefix_length}, {low}-{high}):")
+        for i in range(0, min(len(unused_keys), 256), 16):
+            row_keys = unused_keys[i:i+16]
+            print(" ".join(f"{key:>{prefix_length}}" for key in row_keys))
+        return unused_keys
     else:
-        print("All 65536 keys (0000-FFFF) are currently in use!")
+        print(f"All keys ({low}-{high}) are currently in use!")
         return []
 
 
-def get_repeater(prefix, days=7, data_dir=None):
+def get_repeater(prefix, days=7, data_dir=None, prefix_length=4):
     """Get all repeater info by prefix - handles multiple repeaters with same prefix"""
     devices = extract_device_types(device_types=['repeaters'], days=days, data_dir=data_dir)
 
@@ -345,7 +346,7 @@ def get_repeater(prefix, days=7, data_dir=None):
     # Find all repeaters with the specified prefix
     matching_repeaters = []
     for contact in repeaters:
-        contact_prefix = contact.get('public_key', '')[:4] if contact.get('public_key') else '????'
+        contact_prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else '????'
         if contact_prefix.upper() == prefix.upper():
             matching_repeaters.append(contact)
 

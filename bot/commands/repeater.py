@@ -17,6 +17,7 @@ from bot.utils import (
     get_removed_nodes_file_for_context,
     get_reserved_nodes_file_for_context,
     get_unused_keys_for_context,
+    get_prefix_length_for_context,
     normalize_node,
     is_node_removed,
     validate_hex_prefix,
@@ -85,7 +86,7 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                             for node in data_list:
                                 if node and isinstance(node, dict):
                                     node_prefix = (node.get('prefix') or '').upper()
-                                    # Reserved nodes store 4-char prefix; match if it starts with hex_prefix (2 or 4)
+                                    # Reserved nodes store full prefix (2, 4, or 6 chars); match if it starts with hex_prefix
                                     if len(node_prefix) >= plen and node_prefix[:plen] == hex_prefix:
                                         reserved_nodes.append(node)
                 except Exception as e:
@@ -124,11 +125,11 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 if total == 0:
                     message_parts.append(f"\n{CHECK} {hex_prefix} is **AVAILABLE** for use!")
             else:
-                # Check availability: 4-char must be in unused_keys; 2-char is available if any 4-char under it is unused
+                # Check availability: full prefix must be in unused_keys; 2-char is available if any full prefix under it is unused
+                prefix_length = await get_prefix_length_for_context(ctx)
                 unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
-
                 if unused_keys:
-                    if len(hex_prefix) == 4:
+                    if len(hex_prefix) == prefix_length:
                         available = hex_prefix in unused_keys
                     else:
                         available = any(k.startswith(hex_prefix) for k in unused_keys)

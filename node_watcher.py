@@ -32,12 +32,13 @@ REMOVAL_THRESHOLD_DAYS = 14  # Add nodes to removedNodes if not seen in 14+ days
 class NodeWatcher:
     """Watches nodes.json for changes and manages reserved/removed nodes"""
 
-    def __init__(self, nodes_file: str, reserved_nodes_file: str, removed_nodes_file: str, owners_file: Optional[str] = None):
+    def __init__(self, nodes_file: str, reserved_nodes_file: str, removed_nodes_file: str, category_id: Optional[int] = None, owners_file: Optional[str] = None, category_name: Optional[str] = None, prefix_length: int = 4):
         self.nodes_file = nodes_file
         self.reserved_nodes_file = reserved_nodes_file
         self.removed_nodes_file = removed_nodes_file
         self.owners_file = owners_file or "repeaterOwners.json"
         self.off_reserved_nodes_file = "offReserved.json"
+        self.prefix_length = prefix_length  # hex chars for key prefix (2, 4, or 6 from hash_size 1, 2, 3)
         self.known_node_keys: Set[str] = set()
         self.known_nodes_map: Dict[str, Dict] = {}  # Store full node data for missing node tracking
         self.last_file_mtime = 0
@@ -468,7 +469,7 @@ class NodeWatcher:
             return
 
         # Check all current repeaters against reserved nodes
-        # Match by: public_key prefix (first 4 chars) AND node name contains reserved name (case-insensitive)
+        # Match by: public_key prefix (first prefix_length chars) AND node name contains reserved name (case-insensitive)
         updated_reserved_list = []
         removed_any = False
 
@@ -493,7 +494,7 @@ class NodeWatcher:
             matched_public_key = None
 
             for public_key, node in current_nodes_map.items():
-                node_prefix = public_key.upper()[:4] if len(public_key) >= 4 else ''
+                node_prefix = public_key.upper()[:self.prefix_length] if len(public_key) >= self.prefix_length else ''
                 node_name = node.get('name', '').strip()
 
                 # Match if prefix matches and node name contains reserved name (case-insensitive)
@@ -513,9 +514,9 @@ class NodeWatcher:
                 if reserved_prefix not in off_reserved_prefixes:
                     off_reserved_list.append(reserved_node)
                     off_reserved_prefixes.add(reserved_prefix)
-                    logger.info(f"Repeater with public_key {matched_public_key[:4].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - moving to offReserved list")
+                    logger.info(f"{category_prefix}Repeater with public_key {matched_public_key[:self.prefix_length].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - moving to offReserved list")
                 else:
-                    logger.info(f"Repeater with public_key {matched_public_key[:4].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - already in offReserved list")
+                    logger.info(f"{category_prefix}Repeater with public_key {matched_public_key[:self.prefix_length].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - already in offReserved list")
                 removed_any = True
             else:
                 # Keep this reserved node in the list
@@ -610,7 +611,7 @@ class NodeWatcher:
 
                 # Check if it's been seen recently
                 if self.is_node_recently_seen(current_node):
-                    node_hex = current_node.get('public_key', '')[:4].upper() if current_node.get('public_key') else ''
+                    node_hex = current_node.get('public_key', '')[:self.prefix_length].upper() if current_node.get('public_key') else ''
                     node_name = current_node.get('name', 'Unknown')
                     logger.info(f"Removed node {node_hex}: {node_name} has advertised recently - removing from removed list")
                     removed_any = True
@@ -670,7 +671,7 @@ class NodeWatcher:
                 days_since_seen = (now - last_seen).days
 
                 if days_since_seen > REMOVAL_THRESHOLD_DAYS:
-                    node_hex = public_key[:4].upper() if len(public_key) >= 4 else ''
+                    node_hex = public_key[:self.prefix_length].upper() if len(public_key) >= self.prefix_length else ''
                     node_name = node.get('name', 'Unknown')
                     logger.info(f"Repeater {node_hex}: {node_name} has not been seen in {days_since_seen} days (>14 days) - adding to removedNodes")
                     nodes_to_add.append(node)
@@ -744,13 +745,21 @@ def main():
     removed_nodes_file = config.get("discord", "removed_nodes_file", fallback="removedNodes.json")
     reserved_nodes_file = config.get("discord", "reserved_nodes_file", fallback="reservedNodes.json")
     owners_file = config.get("discord", "owners_file", fallback="repeaterOwners.json")
+    # Prefix length from [discord].hash_size (1=2 hex, 2=4 hex, 3=6 hex)
+    try:
+        hash_size = config.getint("discord", "hash_size", fallback=2)
+    except (ValueError, TypeError):
+        hash_size = 2
+    hash_size = max(1, min(3, hash_size))
+    prefix_length = hash_size * 2
 
     logger.info(f"Using nodes_file: {nodes_file}")
     logger.info(f"Using removed_nodes_file: {removed_nodes_file}")
     logger.info(f"Using reserved_nodes_file: {reserved_nodes_file}")
     logger.info(f"Using owners_file: {owners_file}")
+    logger.info(f"Using prefix_length: {prefix_length}")
 
-    watcher = NodeWatcher(nodes_file, reserved_nodes_file, removed_nodes_file, owners_file)
+    watcher = NodeWatcher(nodes_file, reserved_nodes_file, removed_nodes_file, owners_file=owners_file, prefix_length=prefix_length)
 
     if args.watch:
         # Watch mode - continuously monitor nodes.json
