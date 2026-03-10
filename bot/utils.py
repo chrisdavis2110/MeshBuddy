@@ -81,6 +81,16 @@ async def get_prefix_length_for_context(ctx) -> int:
     return get_prefix_length_for_category(category_id)
 
 
+async def get_prefix_length_for_channel_id(channel_id: int) -> int:
+    """Get prefix length (in hex characters) for the category that contains the given channel."""
+    try:
+        channel = await bot.rest.fetch_channel(channel_id)
+        return get_prefix_length_for_category(channel.parent_id)
+    except Exception as e:
+        logger.debug(f"Error getting prefix length for channel {channel_id}: {e}")
+        return 2  # default 2 bytes = 4 hex chars
+
+
 async def get_messenger_channel_id_from_context(ctx) -> int | None:
     """Get the messenger channel ID from the category where the command was invoked"""
     try:
@@ -252,12 +262,12 @@ async def get_nodes_data_for_context(ctx):
 
 
 def validate_hex_prefix(hex_str: str) -> tuple[bool, str]:
-    """Validate hex prefix: 2 chars (00-FF) or 4 chars (0000-FFFF). Returns (ok, normalized_hex or error_msg)."""
+    """Validate hex prefix: 2 chars (00-FF), 4 chars (0000-FFFF), or 6 chars (000000-FFFFFF). Returns (ok, normalized_hex or error_msg)."""
     if not hex_str or not isinstance(hex_str, str):
-        return (False, "Please provide a hex prefix (2 or 4 characters).")
+        return (False, "Please provide a hex prefix.")
     raw = hex_str.strip().upper()
-    if len(raw) not in (2, 4):
-        return (False, "Invalid hex format. Use 2 characters (00-FF) or 4 characters (0000-FFFF), e.g. `A1` or `A1B2`.")
+    if len(raw) not in (2, 4, 6):
+        return (False, "Invalid hex format. Use 2 (00-FF), 4 (0000-FFFF), or 6 (000000-FFFFFF) characters, e.g. `A1`, `A1B2`, or `A1B2C3`.")
     if not all(c in "0123456789ABCDEF" for c in raw):
         return (False, "Invalid hex format. Use only hex digits (0-9, A-F).")
     return (True, raw)

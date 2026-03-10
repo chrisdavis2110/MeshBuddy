@@ -24,6 +24,7 @@ from bot.utils import (
     get_removed_nodes_file_for_context,
     get_owner_file_for_context,
     get_category_id_from_context,
+    get_prefix_length_for_context,
     normalize_node,
     is_node_removed,
     validate_hex_prefix,
@@ -43,7 +44,7 @@ from bot.command_history import command_history
 class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
     description="Reserve a hex prefix for a repeater", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1B2)')
+    text = lightbulb.string('hex', 'Hex prefix')
     name = lightbulb.string('name', 'Repeater name')
 
     @lightbulb.invoke
@@ -51,10 +52,11 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
         """Reserve a hex prefix for a repeater"""
         try:
             hex_prefix = self.text.upper().strip()
+            prefix_length = await get_prefix_length_for_context(ctx)
 
-            # Validate hex format
-            if len(hex_prefix) != 4 or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond("Invalid hex format. Please use 4 characters (0000-FFFF), e.g., `A1B2`", flags=hikari.MessageFlag.EPHEMERAL)
+            # Validate hex format: must match this category's prefix length
+            if len(hex_prefix) != prefix_length or not all(c in '0123456789ABCDEF' for c in hex_prefix):
+                await ctx.respond(f"Invalid hex format. For this region use {prefix_length} characters (e.g., {'A1' if prefix_length == 2 else 'A1B2' if prefix_length == 4 else 'A1B2C3'}).", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             name = self.name.strip()
@@ -203,9 +205,10 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             with open(reserved_nodes_file, 'r') as f:
                 reserved_data = json.load(f)
 
-            # Find matching reserved node(s): exact match for 4 chars, or prefix match for 2 chars (includes 2-char reservations)
+            prefix_length = await get_prefix_length_for_context(ctx)
+            # Find matching reserved node(s): exact match for full prefix length, or prefix match for shorter (e.g. 2 chars)
             data_list = reserved_data.get('data', [])
-            if len(hex_input) == 4:
+            if len(hex_input) == prefix_length:
                 matches = [n for n in data_list if (n.get('prefix') or '').upper() == hex_input]
             else:
                 # Match prefixes that start with hex_input (e.g. A1 matches A1, A1B2, A1C3)

@@ -79,7 +79,7 @@ def load_data_from_json(filename="nodes.json", data_dir=None):
         return None
 
 
-def compare_data(new_data, old_data=None):
+def compare_data(new_data, old_data=None, prefix_length=4):
     """Compare new data with old data to find changes"""
     if old_data is None:
         print("No previous data to compare with")
@@ -137,7 +137,7 @@ def compare_data(new_data, old_data=None):
                     if contact_key == key:
                         name = contact.get('name', 'Unknown')
                         # Store tuple of (prefix for display, name)
-                        duplicate_keys.append((key[:4], name))
+                        duplicate_keys.append((key[:prefix_length], name))
 
     # Sort duplicate keys by key prefix
     duplicate_keys.sort(key=lambda x: x[0])
@@ -146,7 +146,7 @@ def compare_data(new_data, old_data=None):
     new_contacts_list = []
     for contact in new_contacts:
         if isinstance(contact, dict):
-            key = contact.get('public_key', '')[:4].upper() if contact.get('public_key') else ''
+            key = contact.get('public_key', '').upper() if contact.get('public_key') else ''
             if key and key in newly_added_keys:
                 new_contacts_list.append(contact)
         else:
@@ -155,11 +155,11 @@ def compare_data(new_data, old_data=None):
 
     # Get actual contact objects for duplicates (repeaters only)
     duplicate_contacts = []
-    duplicate_key_prefixes = [key for key, name in duplicate_keys]  # Extract just the prefixes
+    duplicate_key_prefixes = [k for k, name in duplicate_keys]  # Extract just the prefixes (prefix_length chars)
     for contact in new_contacts:
         if isinstance(contact, dict) and contact.get('device_role') == 2:
-            key = contact.get('public_key', '')[:4]
-            if key in duplicate_key_prefixes:  # Include only repeaters
+            key_prefix = contact.get('public_key', '')[:prefix_length] if contact.get('public_key') else ''
+            if key_prefix in duplicate_key_prefixes:  # Include only repeaters
                 duplicate_contacts.append(contact)
         else:
             if str(contact) in duplicate_key_prefixes:

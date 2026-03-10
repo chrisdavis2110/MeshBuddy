@@ -30,7 +30,8 @@ from bot.utils import (
     get_removed_nodes_file_for_context,
     get_removed_nodes_file_for_category,
     is_node_removed,
-    normalize_node
+    normalize_node,
+    get_prefix_length_for_channel_id
 )
 
 
@@ -85,7 +86,8 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
         img_data = img_bytes.getvalue()
 
         # Send as file attachment
-        prefix = public_key[:4].upper() if public_key else '????'
+        prefix_length = await get_prefix_length_for_channel_id(ctx_or_interaction.channel_id)
+        prefix = public_key[:prefix_length].upper() if public_key else '????'
         message = f"QR Code for {prefix}: {name}"
 
         # Create file attachment using hikari.Bytes
@@ -390,7 +392,8 @@ async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
                 existing_owner = owner
                 break
 
-        prefix = public_key[:4].upper() if public_key else '????'
+        prefix_length = await get_prefix_length_for_channel_id(ctx_or_interaction.channel_id)
+        prefix = public_key[:prefix_length].upper() if public_key else '????'
         name = selected_repeater.get('name', 'Unknown')
 
         if existing_owner:
@@ -566,7 +569,8 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
                 break
 
         if already_removed:
-            message = f"{WARN} Repeater {selected_prefix[:4]}: {selected_name} has already been removed"
+            prefix_length = await get_prefix_length_for_channel_id(ctx_or_interaction.channel_id)
+            message = f"{WARN} Repeater {selected_prefix[:prefix_length]}: {selected_name} has already been removed"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
                 await ctx_or_interaction.create_initial_response(
                     hikari.ResponseType.MESSAGE_UPDATE,
@@ -585,7 +589,8 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
         with open(removed_nodes_file, 'w') as f:
             json.dump(removed_data, f, indent=2)
 
-        message = f"{CHECK} Repeater {selected_prefix[:4]}: {selected_name} has been removed"
+        prefix_length = await get_prefix_length_for_channel_id(ctx_or_interaction.channel_id)
+        message = f"{CHECK} Repeater {selected_prefix[:prefix_length]}: {selected_name} has been removed"
 
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
             await ctx_or_interaction.create_initial_response(
@@ -747,7 +752,8 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         with open(owner_file, 'w') as f:
             json.dump(owners_data, f, indent=2)
 
-        prefix = public_key[:4].upper() if public_key else '????'
+        prefix_length = await get_prefix_length_for_channel_id(ctx_or_interaction.channel_id)
+        prefix = public_key[:prefix_length].upper() if public_key else '????'
         name = selected_repeater.get('name', 'Unknown')
         message = f"{CHECK} Successfully unclaimed repeater {prefix}: **{name}**"
 

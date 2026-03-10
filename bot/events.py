@@ -17,7 +17,7 @@ from datetime import datetime
 import hikari
 from bot.core import bot, config, logger, CHECK, CROSS, pending_remove_selections, pending_qr_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections, pending_release_selections
 from bot.command_history import command_history
-from bot.utils import get_owner_file_for_category, get_server_emoji
+from bot.utils import get_owner_file_for_category, get_server_emoji, get_prefix_length_for_channel_id
 from bot.helpers import (
     generate_and_send_qr,
     process_repeater_ownership,
@@ -476,7 +476,8 @@ async def display_owner_info(repeater, owner_file: str, ctx_or_interaction):
 
         public_key = repeater.get('public_key', '')
         name = repeater.get('name', 'Unknown')
-        prefix = public_key[:4].upper() if public_key else '????'
+        prefix_length = await get_prefix_length_for_channel_id(ctx_or_interaction.channel_id)
+        prefix = public_key[:prefix_length].upper() if public_key else '????'
 
         # Get owner info
         owner_info = await get_owner_info_for_repeater(repeater, owner_file)

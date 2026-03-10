@@ -17,7 +17,7 @@ import asyncio
 from datetime import datetime, timedelta
 import hikari
 from bot.core import bot, config, logger, CHECK, WARN, CROSS, RESERVED, known_node_keys, purge_semaphore
-from bot.utils import normalize_node, get_removed_nodes_set, get_server_emoji, is_node_removed
+from bot.utils import normalize_node, get_removed_nodes_set, get_server_emoji, is_node_removed, get_prefix_length_for_category
 from bot.helpers import check_reserved_repeater_and_add_owner, assign_repeater_owner_role
 from bot.command_history import command_history
 from helpers import load_data_from_json
@@ -272,7 +272,8 @@ async def check_for_new_nodes():
 
                 # Format node information
                 node_name = node.get('name', 'Unknown')
-                prefix = public_key[:4].upper() if public_key else '????'
+                prefix_length = get_prefix_length_for_category(category_id)
+                prefix = public_key[:prefix_length].upper() if public_key else '????'
 
                 # Fetch server emojis
                 emoji_new = await get_server_emoji(int(messenger_channel_id), "meshBuddy_new")
