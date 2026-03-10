@@ -303,9 +303,15 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None, initial=
                 merged_nodes = merge_nodes_by_key(existing_nodes, new_data)
                 print(f"   Merged result: {len(merged_nodes)} total nodes")
 
-            # Step 4: Compare the data for reporting
+            # Step 4: Compare the data for reporting (use category hash_size for prefix length)
+            try:
+                hash_size = config.getint(section, "hash_size", fallback=2)
+            except (ValueError, TypeError):
+                hash_size = 2
+            hash_size = max(1, min(3, hash_size))
+            prefix_length = hash_size * 2
             print("4. Comparing new data with existing data...")
-            comparison_result = compare_data(new_data, old_data)
+            comparison_result = compare_data(new_data, old_data, prefix_length=prefix_length)
 
             # Step 5: Save comparison results to updated.json (category-specific)
             updated_file = f"updated_{nodes_file.replace('.json', '')}.json"
