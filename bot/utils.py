@@ -39,6 +39,25 @@ logger = logging.getLogger(__name__)
 
 # Channel and Context Helpers
 
+def get_hash_size_for_category(category_id: int | None) -> int:
+    """Get hash_size (in bytes), clamped to 1-3, defaulting to 2."""
+    try:
+        hash_size = config.getint("discord", "hash_size", fallback=2)
+    except (ValueError, TypeError):
+        hash_size = 2
+
+    # Clamp to supported range 1–3 bytes
+    if hash_size < 1:
+        hash_size = 1
+    elif hash_size > 3:
+        hash_size = 3
+    return hash_size
+
+
+def get_prefix_length_for_category(category_id: int | None) -> int:
+    """Return prefix length in hex characters for a category."""
+    return get_hash_size_for_category(category_id) * 2
+
 async def get_channel_id_from_context(ctx) -> int | None:
     """Get the channel ID from the context where the command was invoked"""
     try:
@@ -46,6 +65,11 @@ async def get_channel_id_from_context(ctx) -> int | None:
     except Exception as e:
         logger.error(f"Error getting channel ID from context: {e}")
         return None
+
+async def get_prefix_length_for_context(ctx) -> int:
+    """Get prefix length (in hex characters) for the category where the command was invoked."""
+    category_id = await get_channel_id_from_context(ctx)
+    return get_prefix_length_for_category(category_id)
 
 
 # ============================================================================
@@ -195,6 +219,10 @@ async def get_unused_keys_for_context(ctx, days=14):
     if data is None:
         return None
 
+    # Determine prefix length for this channel (in hex characters)
+    channel_id = await get_channel_id_from_context(ctx)
+    prefix_length = get_prefix_length_for_category(channel_id)
+
     # Load all repeaters (not filtered by days) to include future timestamps
     contacts = data.get("data", []) if isinstance(data, dict) else data
     if not isinstance(contacts, list):
@@ -210,9 +238,9 @@ async def get_unused_keys_for_context(ctx, days=14):
         # Only include repeaters (device_role == 2)
         if contact.get('device_role') == 2:
             repeaters.append(contact)
+
     # Load removed nodes to exclude them
     removed_set = set()
-    channel_id = await get_channel_id_from_context(ctx)
     removed_nodes_file = get_removed_nodes_file_for_channel(channel_id)
     if os.path.exists(removed_nodes_file):
         try:
@@ -225,6 +253,7 @@ async def get_unused_keys_for_context(ctx, days=14):
                         removed_set.add((node_prefix, node_name))
         except Exception:
             pass
+
     # Get all currently used prefixes (excluding removed nodes)
     used_keys = set()
     for contact in repeaters:
@@ -232,7 +261,9 @@ async def get_unused_keys_for_context(ctx, days=14):
         contact_name = contact.get('name', '').strip()
         if (contact_prefix, contact_name) in removed_set:
             continue
-        used_keys.add(contact_prefix[:4].upper())
+        if contact_prefix:
+            used_keys.add(contact_prefix[:prefix_length].upper())
+
     # Load reserved nodes
     reserved_set = set()
     reserved_nodes_file = get_reserved_nodes_file_for_channel(channel_id)
@@ -243,16 +274,29 @@ async def get_unused_keys_for_context(ctx, days=14):
                 for node in reserved_data.get('data', []):
                     prefix = node.get('prefix', '').upper()
                     if prefix:
-                        reserved_set.add(prefix)
+                        reserved_set.add(prefix[:prefix_length])
         except Exception as e:
             logger.debug(f"Error reading reservedNodes.json: {e}")
-    # Generate all possible hex keys from 0000 to FFFF
-    all_possible_keys = set()
-    for i in range(65536):
-        hex_key = f"{i:04X}"
-        all_possible_keys.add(hex_key)
-    # Find unused keys
-    unused_keys = all_possible_keys - used_keys - reserved_set - set(['0000', 'FFFF'])
+
+    # Generate all possible hex prefixes of the configured length and find unused ones.
+    # Exclude any prefixes whose first byte is 00 or FF, regardless of total prefix size.
+    total_keys = 16 ** prefix_length
+
+    unused_keys = []
+    for i in range(total_keys):
+        hex_key = f"{i:0{prefix_length}X}"
+        # Skip anything starting with 00 or FF (first byte)
+        if prefix_length >= 2:
+            first_byte = hex_key[:2]
+            if first_byte in {"00", "FF"}:
+                continue
+        else:
+            # For 1-byte prefixes (2 hex chars), treat 0x00 and 0xFF as excluded.
+            if hex_key in {"00", "FF"}:
+                continue
+        if (hex_key not in used_keys) and (hex_key not in reserved_set):
+            unused_keys.append(hex_key)
+
     if unused_keys:
         return sorted(unused_keys)
     return []

@@ -23,7 +23,7 @@ MeshBuddy is a comprehensive Discord bot that provides real-time monitoring and 
 - **`/list [days]`** - Get a list of active repeaters (default: last 7 days)
 - **`/offline [days]`** - Get a list of offline repeaters (default: last 14 days)
 - **`/dupes [days]`** - Get a list of duplicate repeater prefixes
-- **`/open [days]`** - Get a list of unused hex keys (00-FF)
+- **`/open [days]`** - Get a list of unused hex keys (01-FE)
 - **`/prefix <hex> [days]`** - Check if a specific hex prefix is available
 - **`/stats <hex> [days]`** - Get detailed stats for a specific repeater
 - **`/qr <hex>`** - Generate a QR code for adding a contact
@@ -75,6 +75,7 @@ MeshBuddy is a comprehensive Discord bot that provides real-time monitoring and 
    bot_messenger_channel_id = <DISCORD_CHANNEL_ID>
    bot_owner_id = <YOUR_USER_ID>
    repeater_owner_role_id = <ROLE_ID>
+   hash_size = <hash_size>
 
    [api]
    api_enabled = False
@@ -273,6 +274,10 @@ This script can be run manually or as a systemd service on Linux. Add the `--wat
 - `bot_messenger_channel_id`: Channel where new node notifications are sent
 - `bot_owner_id`: Your Discord user ID (for admin commands)
 - `repeater_owner_role_id`: Role ID to assign to users who claim repeaters
+- `hash_size`: Size of the prefix space for this category, in **bytes**. Controls how many hex characters are used for prefixes:
+  - `1` → 1 byte prefixes (2 hex chars)
+  - `2` → 2 byte prefixes (4 hex chars)
+  - `3` → 3 byte prefixes (6 hex chars)
 
 ### API Section
 - `api_enabled`: Set to `True` to enable API polling mode
