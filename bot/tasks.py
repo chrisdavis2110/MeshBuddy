@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 import hikari
 
 from bot.core import bot, config, logger, CHECK, WARN, CROSS, RESERVED, known_node_keys
-from bot.utils import normalize_node, get_removed_nodes_set, get_server_emoji, is_node_removed, get_prefix_length_for_category
+from bot.utils import normalize_node, get_removed_nodes_set, get_server_emoji, is_node_removed, get_prefix_length_for_channel_id
 from bot.helpers import check_reserved_repeater_and_add_owner, assign_repeater_owner_role
 from helpers import load_data_from_json
 
@@ -127,20 +127,10 @@ async def update_repeater_channel_name():
         try:
             await bot.rest.edit_channel(repeater_channel_id, name=new_channel_name)
             logger.debug(f"Updated channel {repeater_channel_id} name to: {new_channel_name}")
-        except hikari.RateLimitedError as e:
-            logger.warning(f"Rate limited when updating channel name. Retrying after delay: {e}")
-            # Wait for the rate limit to clear, then retry once
-            retry_after = getattr(e, 'retry_after', 5.0)
-            await asyncio.sleep(retry_after)
-            try:
-                await bot.rest.edit_channel(repeater_channel_id, name=new_channel_name)
-                logger.debug(f"Retry successful: Updated channel {repeater_channel_id} name to: {new_channel_name}")
-            except Exception as retry_e:
-                logger.error(f"Retry failed when updating channel name: {retry_e}")
         except hikari.HTTPResponseError as e:
             # Check if it's a rate limit error (status 429)
             if e.status_code == 429:
-                logger.warning(f"Rate limited when updating channel name (HTTP 429). Skipping this update cycle.")
+                logger.warning("Rate limited when updating channel name (HTTP 429). Skipping this update cycle.")
                 # Don't retry immediately, let the next cycle handle it
             else:
                 raise  # Re-raise if it's a different HTTP error
@@ -276,7 +266,7 @@ async def check_for_new_nodes():
 
                 # Format node information
                 node_name = node.get('name', 'Unknown')
-                prefix_length = get_prefix_length_for_category(category_id)
+                prefix_length = await get_prefix_length_for_channel_id(messenger_channel_id)
                 prefix = public_key[:prefix_length].upper() if public_key else '????'
 
                 # Fetch server emojis

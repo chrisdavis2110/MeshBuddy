@@ -262,7 +262,13 @@ def update_nodes_data(summary_file="update_summary.txt", data_dir=None):
 
         # Step 3: Compare the data
         print("3. Comparing new data with existing data...")
-        comparison_result = compare_data(new_data, old_data)
+        try:
+            hash_size = config.getint("discord", "hash_size", fallback=2)
+        except (ValueError, TypeError):
+            hash_size = 2
+        hash_size = max(1, min(3, hash_size))
+        prefix_length = hash_size * 2
+        comparison_result = compare_data(new_data, old_data, prefix_length=prefix_length)
 
         # Step 4: Save comparison results to updated.json
         updated_path = os.path.join(data_dir, updated_file)
