@@ -26,7 +26,7 @@ from bot.utils import (
     get_prefix_length_for_context,
     normalize_node,
     is_node_removed,
-    validate_hex_prefix,
+    validate_hex_prefix_for_channel,
 )
 from bot.helpers import (
     process_repeater_ownership,
@@ -52,9 +52,10 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
             hex_prefix = self.text.upper().strip()
             prefix_length = await get_prefix_length_for_context(ctx)
 
-            # Validate hex format: must match this category's prefix length
+            # Validate hex format: full key length for this channel
             if len(hex_prefix) != prefix_length or not all(c in '0123456789ABCDEF' for c in hex_prefix):
-                await ctx.respond(f"Invalid hex format. For this region use {prefix_length} characters (e.g., {'A1' if prefix_length == 2 else 'A1B2' if prefix_length == 4 else 'A1B2C3'}).", flags=hikari.MessageFlag.EPHEMERAL)
+                hint = f"Use {prefix_length} hex characters for this channel (e.g. /reserve {'XX' * (prefix_length // 2)} MyRepeater)"
+                await ctx.respond(f"Invalid hex. {hint}", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
             name = self.name.strip()
@@ -157,17 +158,27 @@ class ReserveRepeaterCommand(lightbulb.SlashCommand, name="reserve",
 class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
     description="Release a hex prefix for a repeater", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (2 chars e.g. A1, or 4 chars e.g. A1B2)')
+    text = lightbulb.string('hex', 'Hex prefix')
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
-        """Release a hex prefix for a repeater. Use 2 chars to match by first byte, or 4 for exact."""
+        """Release a reservation: full prefix for exact match, or shorter prefix to match multiple."""
         try:
-            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
-            if not ok:
-                await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
+            hex_input = (self.text or "").upper().strip()
+            if not hex_input:
+                await ctx.respond("Please provide a hex prefix.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
-            hex_input = hex_prefix_or_err  # 2 or 4 chars
+
+            prefix_length = await get_prefix_length_for_context(ctx)
+            allowed_lengths = [2]
+            if prefix_length >= 4:
+                allowed_lengths.append(4)
+            if prefix_length >= 6:
+                allowed_lengths.append(6)
+            if len(hex_input) not in allowed_lengths or not all(c in "0123456789ABCDEF" for c in hex_input):
+                hint = f"Use {prefix_length} hex characters for this category (e.g. /release {'XX' * (prefix_length // 2)})"
+                await ctx.respond(f"Invalid hex. {hint}", flags=hikari.MessageFlag.EPHEMERAL)
+                return
 
             # Get bot owner ID from config
             bot_owner_id = None
@@ -193,8 +204,7 @@ class ReleaseRepeaterCommand(lightbulb.SlashCommand, name="release",
             with open(reserved_nodes_file, 'r') as f:
                 reserved_data = json.load(f)
 
-            prefix_length = await get_prefix_length_for_context(ctx)
-            # Find matching reserved node(s): exact match for full prefix length, or prefix match for shorter (e.g. 2 chars)
+            # Find matching reserved node(s): exact match for full prefix length, or prefix match for shorter
             data_list = reserved_data.get('data', [])
             if len(hex_input) == prefix_length:
                 matches = [n for n in data_list if (n.get('prefix') or '').upper() == hex_input]
@@ -297,7 +307,8 @@ class RemoveNodeCommand(lightbulb.SlashCommand, name="remove",
     async def invoke(self, ctx: lightbulb.Context):
         """Remove a node from nodes.json and copy it to removedNodes.json"""
         try:
-            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            prefix_length = await get_prefix_length_for_context(ctx)
+            ok, hex_prefix_or_err = validate_hex_prefix_for_channel(self.text, prefix_length)
             if not ok:
                 await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
@@ -420,7 +431,8 @@ class ClaimRepeaterCommand(lightbulb.SlashCommand, name="claim",
     async def invoke(self, ctx: lightbulb.Context):
         """Claim ownership of a repeater"""
         try:
-            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            prefix_length = await get_prefix_length_for_context(ctx)
+            ok, hex_prefix_or_err = validate_hex_prefix_for_channel(self.text, prefix_length)
             if not ok:
                 await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
@@ -537,7 +549,8 @@ class UnclaimRepeaterCommand(lightbulb.SlashCommand, name="unclaim",
     async def invoke(self, ctx: lightbulb.Context):
         """Unclaim ownership of a repeater"""
         try:
-            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            prefix_length = await get_prefix_length_for_context(ctx)
+            ok, hex_prefix_or_err = validate_hex_prefix_for_channel(self.text, prefix_length)
             if not ok:
                 await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
@@ -654,7 +667,8 @@ class OwnerRepeaterCommand(lightbulb.SlashCommand, name="owner",
     async def invoke(self, ctx: lightbulb.Context):
         """Look up the owner of a repeater"""
         try:
-            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            prefix_length = await get_prefix_length_for_context(ctx)
+            ok, hex_prefix_or_err = validate_hex_prefix_for_channel(self.text, prefix_length)
             if not ok:
                 await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return

@@ -341,13 +341,29 @@ async def periodic_node_watcher():
 # Utility Functions
 # ============================================================================
 
-async def send_long_message(ctx, header, lines, footer=None, max_length=2000):
-    """Send a message that may exceed Discord's character limit by splitting into multiple messages"""
+async def send_long_message(
+    ctx,
+    header,
+    lines,
+    footer=None,
+    max_length=2000,
+    *,
+    edit_initial_for_first_chunk: bool = False,
+):
+    """Send a message that may exceed Discord's character limit by splitting into multiple messages.
+
+    If ``edit_initial_for_first_chunk`` is True, the first chunk is sent with
+    ``edit_initial_response`` (use after ``await ctx.defer()`` so Discord's 3s interaction
+    window is not exceeded before heavy work finishes).
+    """
     if not lines:
         message = header
         if footer:
             message += f"\n\n{footer}"
-        await ctx.respond(message)
+        if edit_initial_for_first_chunk:
+            await ctx.interaction.edit_initial_response(message)
+        else:
+            await ctx.respond(message)
         return
 
     footer_len = len(footer) + 2 if footer else 0  # +2 for \n\n before footer
@@ -414,7 +430,10 @@ async def send_long_message(ctx, header, lines, footer=None, max_length=2000):
                 footer_added = True
 
         if i == 0:
-            await ctx.respond(message)
+            if edit_initial_for_first_chunk:
+                await ctx.interaction.edit_initial_response(message)
+            else:
+                await ctx.respond(message)
         else:
             # Send as regular channel messages back to back
             await bot.rest.create_message(

@@ -17,7 +17,8 @@ from bot.utils import (
     get_repeater_for_context,
     get_removed_nodes_file_for_context,
     is_node_removed,
-    validate_hex_prefix,
+    get_prefix_length_for_context,
+    validate_hex_prefix_for_channel,
 )
 from bot.helpers import generate_and_send_qr
 import json
@@ -94,7 +95,8 @@ class QRCodeCommand(lightbulb.SlashCommand, name="qr",
                 await ctx.respond("Please provide a hex prefix (e.g., `/qr A1` or `/qr A1B2`)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
-            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            prefix_length = await get_prefix_length_for_context(ctx)
+            ok, hex_prefix_or_err = validate_hex_prefix_for_channel(self.text, prefix_length)
             if not ok:
                 await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
