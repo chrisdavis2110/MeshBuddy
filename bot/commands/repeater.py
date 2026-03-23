@@ -20,7 +20,7 @@ from bot.utils import (
     get_prefix_length_for_context,
     normalize_node,
     is_node_removed,
-    validate_hex_prefix,
+    validate_hex_prefix_for_category,
 )
 
 
@@ -28,7 +28,7 @@ from bot.utils import (
 class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
     description="Check if a hex prefix is available", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1 or A1B2)')
+    text = lightbulb.string('hex', 'Hex prefix')
     days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
@@ -41,7 +41,8 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                 await ctx.respond("Please provide a hex prefix (e.g., `/prefix A1` or `/prefix A1B2`)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
-            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            prefix_length = await get_prefix_length_for_context(ctx)
+            ok, hex_prefix_or_err = validate_hex_prefix_for_category(self.text, prefix_length)
             if not ok:
                 await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
@@ -104,7 +105,13 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                     for i, repeater in enumerate(active_nodes, 1):
                         if isinstance(repeater, dict):
                             name = repeater.get('name', 'Unknown')
-                            message_parts.append(f"{name}")
+                            pk = (repeater.get('public_key') or '').upper()
+                            key_hex = (
+                                pk[:prefix_length]
+                                if len(pk) >= prefix_length
+                                else pk or "?"
+                            )
+                            message_parts.append(f"{key_hex}: {name}")
                         else:
                             message_parts.append(f"(data error)")
 
@@ -115,7 +122,15 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                     for i, node in enumerate(reserved_nodes, 1):
                         name = node.get('name', 'Unknown')
                         display_name = node.get('display_name', node.get('username', 'Unknown'))
-                        message_parts.append(f"{name} (reserved by {display_name})")
+                        node_prefix = (node.get('prefix') or '').upper()
+                        key_hex = (
+                            node_prefix[:prefix_length]
+                            if len(node_prefix) >= prefix_length
+                            else node_prefix or "?"
+                        )
+                        message_parts.append(
+                            f"{key_hex}: {name} (reserved by {display_name})"
+                        )
 
                 # Summary
                 # Ensure both are lists (defensive check)
@@ -126,7 +141,6 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
                     message_parts.append(f"\n{CHECK} {hex_prefix} is **AVAILABLE** for use!")
             else:
                 # Check availability: full prefix must be in unused_keys; 2-char is available if any full prefix under it is unused
-                prefix_length = await get_prefix_length_for_context(ctx)
                 unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
                 if unused_keys:
                     if len(hex_prefix) == prefix_length:
@@ -151,7 +165,7 @@ class CheckPrefixCommand(lightbulb.SlashCommand, name="prefix",
 class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
     description="Get the stats of a repeater", hooks=[category_check]):
 
-    text = lightbulb.string('hex', 'Hex prefix (e.g., A1 or A1B2)')
+    text = lightbulb.string('hex', 'Hex prefix')
     days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
@@ -163,7 +177,8 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                 await ctx.respond("Please provide a hex prefix (e.g., `/stats A1` or `/stats A1B2`)", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
-            ok, hex_prefix_or_err = validate_hex_prefix(self.text)
+            prefix_length = await get_prefix_length_for_context(ctx)
+            ok, hex_prefix_or_err = validate_hex_prefix_for_category(self.text, prefix_length)
             if not ok:
                 await ctx.respond(hex_prefix_or_err, flags=hikari.MessageFlag.EPHEMERAL)
                 return
@@ -206,6 +221,10 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
 
                     name = repeater.get('name', 'Unknown')
                     public_key = repeater.get('public_key', 'Unknown')
+                    pk_u = (public_key or "").strip().upper() if isinstance(public_key, str) else ""
+                    display_prefix = (
+                        pk_u[:prefix_length] if len(pk_u) >= prefix_length else hex_prefix
+                    )
                     last_seen = repeater.get('last_seen', 'Unknown')
                     location = repeater.get('location', {'latitude': 0, 'longitude': 0}) or {'latitude': 0, 'longitude': 0}
                     lat = location.get('latitude', 0)
@@ -227,7 +246,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                         except Exception:
                             formatted_last_seen = "Invalid timestamp"
 
-                    message = f"Repeater {hex_prefix}:\nName: {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n"
+                    message = f"Repeater {display_prefix}:\nName: {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n"
 
                     if battery != 0:
                         message += f"Battery Voltage: {battery} V\n"

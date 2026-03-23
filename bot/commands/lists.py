@@ -22,6 +22,9 @@ from bot.utils import (
     get_reserved_nodes_file_for_context,
     get_extract_device_types_for_context,
     get_unused_keys_for_context,
+    get_unused_keys_for_1byte,
+    get_unused_keys_with_prefix,
+    get_used_full_prefixes_for_context,
     get_category_id_from_context,
     get_prefix_length_for_context,
     normalize_node,
@@ -329,10 +332,10 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
             removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
             if os.path.exists(removed_nodes_file):
                 try:
+                    prefix_length = await get_prefix_length_for_context(ctx)
                     with open(removed_nodes_file, 'r') as f:
                         removed_data = json.load(f)
                         for node in removed_data.get('data', []):
-                            prefix_length = await get_prefix_length_for_context(ctx)
                             public_key = node.get('public_key', '')[:prefix_length].upper() if node.get('public_key') else ''
                             name = node.get('name', 'Unknown')
                             if public_key and name and node.get('device_role') == 2:
@@ -424,93 +427,136 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
 class OpenKeysCommand(lightbulb.SlashCommand, name="open",
     description="Get list of unused hex keys", hooks=[category_check]):
 
-    hex_char = lightbulb.string('hex', 'Hex prefix (e.g., A1)', default=None)
+    hex_char = lightbulb.string('hex', 'Hex prefix', default=None)
     days = lightbulb.number('days', 'Days to check (default: 14)', default=14)
 
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of unused hex keys"""
+        open_deferred = False
         try:
-            unused_keys = await get_unused_keys_for_context(ctx, days=self.days)
+            # No hex provided: only use get_unused_keys_for_1byte
+            if self.hex_char is None:
+                # Defer before channel fetch + file scan — both can approach Discord's ~3s interaction limit.
+                await ctx.defer()
+                open_deferred = True
+                prefix_length = await get_prefix_length_for_context(ctx)
+                one_byte_list = await get_unused_keys_for_1byte(ctx, days=self.days)
+                if one_byte_list is None:
+                    await ctx.interaction.edit_initial_response("Error retrieving unused keys.")
+                    return
+                if not one_byte_list:
+                    if prefix_length >= 4:
+                        await ctx.interaction.edit_initial_response(
+                            "All 256 1-byte prefixes are currently in use. Use `/open <hex>` to see keys under a prefix."
+                        )
+                    else:
+                        await ctx.interaction.edit_initial_response("All 256 prefixes are currently in use!")
+                    return
+                grouped_by_tens = {}
+                for byte in one_byte_list:
+                    tens = byte[0].upper()
+                    grouped_by_tens.setdefault(tens, []).append(byte)
+                lines = []
+                key_width = 2
+                for tens in sorted(grouped_by_tens.keys(), key=lambda c: int(c, 16)):
+                    bytes_in_group = sorted(grouped_by_tens[tens], key=lambda x: int(x, 16))
+                    lines.append(" ".join(f"{b:>{key_width}}" for b in bytes_in_group))
+                if prefix_length >= 4:
+                    header = "Available 1-byte prefixes:"
+                    footer = f"Total: {len(one_byte_list)} 1-byte prefix(es). Use `/open <hex>` to see keys under a prefix."
+                else:
+                    header = "Available prefixes:"
+                    footer = f"Total: {len(one_byte_list)} key(s)"
+                await send_long_message(
+                    ctx, header, lines, footer, edit_initial_for_first_chunk=True
+                )
+                return
 
             prefix_length = await get_prefix_length_for_context(ctx)
 
-            if not unused_keys:
-                total_keys = 16 ** prefix_length
-                low = "0" * prefix_length
-                high = "F" * prefix_length
-                await ctx.respond(f"All {total_keys} keys ({low}-{high}) are currently in use!")
-                return
-
-            # When hash_size=1 (prefix_length 2), show all open keys without requiring a hex parameter
-            if self.hex_char is None and prefix_length == 2:
-                grouped_by_tens = {}
-                for key in unused_keys:
-                    first = key[0].upper()
-                    grouped_by_tens.setdefault(first, []).append(key)
-                lines = []
-                key_width = 2
-                for first in sorted(grouped_by_tens.keys(), key=lambda c: int(c, 16)):
-                    keys_in_group = sorted(grouped_by_tens[first], key=lambda x: int(x, 16))
-                    lines.append(" ".join(f"{k:>{key_width}}" for k in keys_in_group))
-                header = "Unused Keys:"
-                footer = f"Total: {len(unused_keys)} keys"
-                await send_long_message(ctx, header, lines, footer)
-                return
-
-            # If no hex argument provided (and keyspace > 1 byte), show count and prompt for hex
-            if self.hex_char is None:
-                count = len(unused_keys)
-                await ctx.respond(f"There are **{count}** unused keys. Use `/open <hex>` to see keys starting with that hex byte (00-FF).")
-                return
-
-            # Validate hex byte (2 characters)
+            # Hex provided: length must match hash_size (2, 4, or 6 chars)
             hex_char = self.hex_char.upper().strip()
-            if len(hex_char) != 2 or not all(c in '0123456789ABCDEF' for c in hex_char):
-                await ctx.respond("Invalid hex format. Please use 2 characters (00-FF), e.g., `/open A1`", flags=hikari.MessageFlag.EPHEMERAL)
+            allowed_lengths = [2]
+            if prefix_length >= 4:
+                allowed_lengths.append(4)
+            if prefix_length >= 6:
+                allowed_lengths.append(6)
+            if len(hex_char) not in allowed_lengths or not all(c in '0123456789ABCDEF' for c in hex_char):
+                hint = f"Use {prefix_length} hex characters for this category (e.g. /open {'XX' * (prefix_length // 2)})"
+                await ctx.respond(f"Invalid hex. {hint}", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+            if hex_char[:2] in {"00", "FF"}:
+                await ctx.respond("Prefix cannot start with 00 or FF.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
 
-            # Filter keys that start with the specified hex byte (first 2 characters)
-            filtered_keys = [key for key in unused_keys if key.startswith(hex_char)]
+            await ctx.defer()
+            open_deferred = True
+
+            filtered_keys = await get_unused_keys_with_prefix(ctx, hex_char, days=self.days)
+            if filtered_keys is None:
+                await ctx.interaction.edit_initial_response("Error retrieving unused keys.")
+                return
 
             if not filtered_keys:
-                await ctx.respond(f"No open keys found starting with '{hex_char}'.")
+                await ctx.interaction.edit_initial_response(
+                    f"No open keys found starting with '{hex_char}'."
+                )
                 return
 
-            # Sort the filtered keys numerically
-            filtered_keys.sort(key=lambda x: int(x, 16))
+            prefix_len = len(hex_char)
+            # Full key: prefix length equals category prefix length → show single key
+            if prefix_len == prefix_length:
+                lines = [hex_char]
+                header = f"Unused keys starting with '{hex_char}':"
+                footer = "Total: 1 key"
+                await send_long_message(
+                    ctx, header, lines, footer, edit_initial_for_first_chunk=True
+                )
+                return
 
-            # Group keys by the first character of the second byte (3rd character overall) when prefix_length >= 4
-            grouped_keys = {}
-            for key in filtered_keys:
-                third_char = key[2] if len(key) >= 3 else ''
-                if third_char not in grouped_keys:
-                    grouped_keys[third_char] = []
-                grouped_keys[third_char].append(key)
-
-            # Format keys, breaking long lines into chunks to fit Discord's 2000 char limit
+            # Next-byte columns with *no* repeater in that column (distinct count drops when any key uses prefix+BB)
+            used_prefixes, _plen = await get_used_full_prefixes_for_context(ctx, days=self.days)
+            if used_prefixes is None:
+                await ctx.interaction.edit_initial_response("Error retrieving used keys.")
+                return
+            fully_open_next = []
+            for i in range(256):
+                bb = f"{i:02X}"
+                col = hex_char + bb
+                if not any(uk.startswith(col) for uk in used_prefixes):
+                    fully_open_next.append(bb)
+            if not fully_open_next and filtered_keys:
+                await ctx.interaction.edit_initial_response(
+                    f"No next-byte column is completely repeater-free under `{hex_char}`. "
+                    f"Use a longer prefix (e.g. `/open {hex_char}XX`) to list keys where repeaters exist."
+                )
+                return
+            grouped_by_tens = {}
+            for byte in fully_open_next:
+                tens = byte[0].upper()
+                grouped_by_tens.setdefault(tens, []).append(byte)
             lines = []
-            max_line_length = 1800
-            key_width = max(4, prefix_length)
-
-            for third_char in sorted(grouped_keys.keys()):
-                keys_in_group = grouped_keys[third_char]
-                current_line = []
-                for key in keys_in_group:
-                    key_str = f"{key:>{key_width}}"
-                    test_line = current_line + [key_str]
-                    test_line_str = " ".join(test_line)
-                    if current_line and len(test_line_str) > max_line_length:
-                        lines.append(" ".join(current_line))
-                        current_line = [key_str]
-                    else:
-                        current_line.append(key_str)
-                if current_line:
-                    lines.append(" ".join(current_line))
-
-            header = f"Unused Keys starting with '{hex_char}':"
-            footer = f"Total: {len(filtered_keys)} keys"
-            await send_long_message(ctx, header, lines, footer)
+            key_width = 2
+            for tens in sorted(grouped_by_tens.keys(), key=lambda c: int(c, 16)):
+                bytes_in_group = sorted(grouped_by_tens[tens], key=lambda x: int(x, 16))
+                lines.append(" ".join(f"{b:>{key_width}}" for b in bytes_in_group))
+            header = f"Unused keys starting with '{hex_char}':"
+            footer = f"Total: {len(fully_open_next)} keys"
+            if len(hex_char) == 2:
+                footer += f". Use `/open {hex_char}XX` to see remaining keys under that prefix."
+            await send_long_message(
+                ctx, header, lines, footer, edit_initial_for_first_chunk=True
+            )
         except Exception as e:
             logger.error(f"Error in open command: {e}")
-            await ctx.respond("Error retrieving unused keys.", flags=hikari.MessageFlag.EPHEMERAL)
+            try:
+                if open_deferred:
+                    await ctx.interaction.edit_initial_response("Error retrieving unused keys.")
+                else:
+                    await ctx.respond(
+                        "Error retrieving unused keys.",
+                        flags=hikari.MessageFlag.EPHEMERAL,
+                    )
+            except Exception:
+                logger.debug("Could not send open command error response", exc_info=True)

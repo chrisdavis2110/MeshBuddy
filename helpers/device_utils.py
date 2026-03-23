@@ -80,6 +80,11 @@ def extract_device_types(data=None, device_types=None, days=7, data_dir=None):
             contact['device_role'] = contact['role']
         if 'last_heard' in contact and 'last_seen' not in contact:
             contact['last_seen'] = contact['last_heard']
+        dr = contact.get('device_role')
+        if isinstance(dr, str):
+            s = dr.strip()
+            if s.isdigit():
+                contact['device_role'] = int(s)
 
         # Check if device is within the specified time window
         if not is_within_window(contact, min_days=0, max_days=days):

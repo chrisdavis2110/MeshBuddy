@@ -5,7 +5,7 @@ Contains helper functions for file paths, category management, context helpers,
 emoji management, and node utilities.
 
 - get_hash_size_for_category: Get the hash size for a category, clamped to 1-3, defaulting to 2.
-- get_prefix_length_for_category: Get the prefix length for a category, clamped to 1-3, defaulting to 2.
+- get_prefix_length_for_category: Hex prefix length for a category (hash_size * 2, i.e. 2, 4, or 6).
 - get_category_id_from_context: Get the category ID from the context where the command was invoked.
 - get_prefix_length_for_context: Get the prefix length for the category where the command was invoked.
 - get_messenger_channel_id_from_context: Get the messenger channel ID for the category where the command was invoked.
@@ -18,10 +18,12 @@ emoji management, and node utilities.
 - get_removed_nodes_file_for_context: Get removed nodes file name based on the category where the command was invoked.
 - get_owner_file_for_context: Get owner file name based on the category where the command was invoked.
 - get_nodes_data_for_context: Get nodes data based on the category where the command was invoked.
-- validate_hex_prefix: Validate hex prefix (2 or 4 chars); returns (ok, normalized_hex or error_msg).
+- validate_hex_prefix: Validate hex prefix (2, 4, or 6 chars); returns (ok, normalized_hex or error_msg).
+- validate_hex_prefix_for_category: Validate hex length against category hash_size (prefix_length 2/4/6).
 - get_repeater_for_context: Get repeater data based on the category where the command was invoked, filtered by prefix (2 or 4 hex chars) and days.
 - get_extract_device_types_for_context: Extract device types based on the category where the command was invoked.
 - get_unused_keys_for_context: Get unused keys based on the category where the command was invoked, excluding removed and reserved nodes.
+- get_unused_keys_for_1byte: Get available 1-byte prefixes (hash_size=1 view) from the same context; returns (list of 2-char hex, total_key_count).
 - initialize_emojis: Pre-load emojis when bot starts, with logging of available emojis for debugging.
 - get_server_emoji: Get a Discord server emoji by name, with caching and config override support.
 - normalize_node: Normalize node field names to handle both 'role'/'device_role' and 'last_heard'/'last_seen'.
@@ -88,7 +90,7 @@ async def get_prefix_length_for_channel_id(channel_id: int) -> int:
         return get_prefix_length_for_category(channel.parent_id)
     except Exception as e:
         logger.debug(f"Error getting prefix length for channel {channel_id}: {e}")
-        return 2  # default 2 bytes = 4 hex chars
+        return 4  # default 2 bytes = 4 hex chars
 
 
 async def get_messenger_channel_id_from_context(ctx) -> int | None:
@@ -261,6 +263,18 @@ async def get_nodes_data_for_context(ctx):
     return load_data_from_json(nodes_file)
 
 
+def allowed_byte_aligned_prefix_lengths(category_prefix_length: int) -> tuple[int, ...]:
+    """Valid user hex lengths (2, 4, or 6) up to the category's full prefix length from hash_size."""
+    lengths: list[int] = []
+    if category_prefix_length >= 2:
+        lengths.append(2)
+    if category_prefix_length >= 4:
+        lengths.append(4)
+    if category_prefix_length >= 6:
+        lengths.append(6)
+    return tuple(lengths) if lengths else (2,)
+
+
 def validate_hex_prefix(hex_str: str) -> tuple[bool, str]:
     """Validate hex prefix: 2 chars (00-FF), 4 chars (0000-FFFF), or 6 chars (000000-FFFFFF). Returns (ok, normalized_hex or error_msg)."""
     if not hex_str or not isinstance(hex_str, str):
@@ -268,6 +282,30 @@ def validate_hex_prefix(hex_str: str) -> tuple[bool, str]:
     raw = hex_str.strip().upper()
     if len(raw) not in (2, 4, 6):
         return (False, "Invalid hex format. Use 2 (00-FF), 4 (0000-FFFF), or 6 (000000-FFFFFF) characters, e.g. `A1`, `A1B2`, or `A1B2C3`.")
+    if not all(c in "0123456789ABCDEF" for c in raw):
+        return (False, "Invalid hex format. Use only hex digits (0-9, A-F).")
+    return (True, raw)
+
+
+def validate_hex_prefix_for_category(hex_str: str, category_prefix_length: int) -> tuple[bool, str]:
+    """Validate hex for slash commands in a category: length must be byte-aligned (2/4/6) and not exceed full prefix length."""
+    if not hex_str or not isinstance(hex_str, str):
+        return (False, "Please provide a hex prefix.")
+    raw = hex_str.strip().upper()
+    allowed = allowed_byte_aligned_prefix_lengths(category_prefix_length)
+    if len(raw) not in allowed:
+        bits: list[str] = []
+        if 2 in allowed:
+            bits.append("2 (`A1`)")
+        if 4 in allowed:
+            bits.append("4 (`A1B2`)")
+        if 6 in allowed:
+            bits.append("6 (`A1B2C3`)")
+        lens = ", ".join(bits)
+        return (
+            False,
+            f"Invalid hex length for this category (full prefix is {category_prefix_length} hex digits). Use {lens}.",
+        )
     if not all(c in "0123456789ABCDEF" for c in raw):
         return (False, "Invalid hex format. Use only hex digits (0-9, A-F).")
     return (True, raw)
@@ -341,12 +379,234 @@ async def get_unused_keys_for_context(ctx, days=14):
     # Get all currently used prefixes (excluding removed nodes)
     used_keys = set()
     for contact in repeaters:
-        contact_prefix = contact.get('public_key', '').upper() if contact.get('public_key') else ''
+        full_pk = str(contact.get('public_key') or '').strip().upper()
         contact_name = contact.get('name', '').strip()
-        if (contact_prefix, contact_name) in removed_set:
+        if full_pk and (full_pk, contact_name) in removed_set:
             continue
-        if contact_prefix:
-            used_keys.add(contact_prefix[:prefix_length].upper())
+        up = _repeater_used_prefix(contact, prefix_length)
+        if up:
+            used_keys.add(up)
+
+    # Load reserved nodes (category-specific)
+    reserved_set = set()
+    reserved_nodes_file = get_reserved_nodes_file_for_category(category_id)
+    if os.path.exists(reserved_nodes_file):
+        try:
+            with open(reserved_nodes_file, 'r') as f:
+                reserved_data = json.load(f)
+                for node in reserved_data.get('data', []):
+                    prefix = (node.get('prefix') or '').upper()
+                    if prefix:
+                        reserved_set.add(prefix[:prefix_length])
+        except Exception as e:
+            logger.debug(f"Error reading reservedNodes.json: {e}")
+
+    # Generate all possible hex prefixes of the configured length and find unused ones.
+    # Exclude any prefixes whose first byte is 00 or FF, regardless of total prefix size.
+    total_keys = 16 ** prefix_length
+
+    unused_keys = []
+    for i in range(total_keys):
+        hex_key = f"{i:0{prefix_length}X}"
+        # Skip anything starting with 00 or FF (first byte)
+        if prefix_length >= 2:
+            first_byte = hex_key[:2]
+            if first_byte in {"00", "FF"}:
+                continue
+        else:
+            # For 1-byte prefixes (2 hex chars), treat 0x00 and 0xFF as excluded.
+            if hex_key in {"00", "FF"}:
+                continue
+        if (hex_key not in used_keys) and (hex_key not in reserved_set):
+            unused_keys.append(hex_key)
+
+    if unused_keys:
+        return sorted(unused_keys)
+    return []
+
+
+async def get_unused_keys_with_prefix(ctx, hex_prefix, days=14):
+    """Get unused keys that start with the given hex prefix.
+    hex_prefix can be 2, 4, or 6 chars to match hash_size (1, 2, or 3 bytes).
+    Avoids building the full key list for hash_size=3; iterates only over keys with this prefix.
+    Returns list of full unused keys starting with hex_prefix, or None on error.
+    """
+    data = await get_nodes_data_for_context(ctx)
+    if data is None:
+        return None
+
+    category_id = await get_category_id_from_context(ctx)
+    prefix_length = get_prefix_length_for_category(category_id)
+
+    contacts = data.get("data", []) if isinstance(data, dict) else data
+    if not isinstance(contacts, list):
+        return None
+
+    repeaters = []
+    for contact in contacts:
+        if not isinstance(contact, dict):
+            continue
+        normalize_node(contact)
+        if contact.get('device_role') == 2:
+            repeaters.append(contact)
+
+    removed_set = set()
+    removed_nodes_file = get_removed_nodes_file_for_category(category_id)
+    if os.path.exists(removed_nodes_file):
+        try:
+            with open(removed_nodes_file, 'r') as f:
+                removed_data = json.load(f)
+                for node in removed_data.get('data', []):
+                    node_prefix = node.get('public_key', '').upper() if node.get('public_key') else ''
+                    node_name = node.get('name', '').strip()
+                    if node_prefix and node_name:
+                        removed_set.add((node_prefix, node_name))
+        except Exception:
+            pass
+
+    used_keys = set()
+    for contact in repeaters:
+        full_pk = str(contact.get('public_key') or '').strip().upper()
+        contact_name = contact.get('name', '').strip()
+        if full_pk and (full_pk, contact_name) in removed_set:
+            continue
+        up = _repeater_used_prefix(contact, prefix_length)
+        if up:
+            used_keys.add(up)
+
+    reserved_set = set()
+    reserved_nodes_file = get_reserved_nodes_file_for_category(category_id)
+    if os.path.exists(reserved_nodes_file):
+        try:
+            with open(reserved_nodes_file, 'r') as f:
+                reserved_data = json.load(f)
+                for node in reserved_data.get('data', []):
+                    prefix = (node.get('prefix') or '').upper()
+                    if prefix:
+                        reserved_set.add(prefix[:prefix_length])
+        except Exception as e:
+            logger.debug(f"Error reading reservedNodes.json: {e}")
+
+    hex_prefix = hex_prefix.upper().strip()
+    prefix_len = len(hex_prefix)
+    if prefix_len not in (2, 4, 6) or prefix_len > prefix_length:
+        return []
+    if not all(c in '0123456789ABCDEF' for c in hex_prefix):
+        return []
+    if hex_prefix[:2] in {"00", "FF"}:
+        return []
+
+    suffix_length = prefix_length - prefix_len
+    suffix_count = 16 ** suffix_length
+    unused_keys = []
+    for i in range(suffix_count):
+        suffix_hex = f"{i:0{suffix_length}X}" if suffix_length else ""
+        hex_key = hex_prefix + suffix_hex
+        if (hex_key not in used_keys) and (hex_key not in reserved_set):
+            unused_keys.append(hex_key)
+
+    return sorted(unused_keys) if unused_keys else []
+
+
+async def get_used_full_prefixes_for_context(ctx, days=14):
+    """Full hex prefixes (length = category prefix_length) in use by repeaters, excluding removed.
+    Used for /open column occupancy. Returns (used_set, prefix_length) or (None, None)."""
+    data = await get_nodes_data_for_context(ctx)
+    if data is None:
+        return None, None
+
+    category_id = await get_category_id_from_context(ctx)
+    prefix_length = get_prefix_length_for_category(category_id)
+
+    contacts = data.get("data", []) if isinstance(data, dict) else data
+    if not isinstance(contacts, list):
+        return None, None
+
+    repeaters = []
+    for contact in contacts:
+        if not isinstance(contact, dict):
+            continue
+        normalize_node(contact)
+        if contact.get("device_role") == 2:
+            repeaters.append(contact)
+
+    removed_set = set()
+    removed_nodes_file = get_removed_nodes_file_for_category(category_id)
+    if os.path.exists(removed_nodes_file):
+        try:
+            with open(removed_nodes_file, "r") as f:
+                removed_data = json.load(f)
+                for node in removed_data.get("data", []):
+                    node_prefix = node.get("public_key", "").upper() if node.get("public_key") else ""
+                    node_name = node.get("name", "").strip()
+                    if node_prefix and node_name:
+                        removed_set.add((node_prefix, node_name))
+        except Exception:
+            pass
+
+    used_keys = set()
+    for contact in repeaters:
+        full_pk = str(contact.get("public_key") or "").strip().upper()
+        contact_name = contact.get("name", "").strip()
+        if full_pk and (full_pk, contact_name) in removed_set:
+            continue
+        up = _repeater_used_prefix(contact, prefix_length)
+        if up:
+            used_keys.add(up)
+
+    return used_keys, prefix_length
+
+
+async def get_unused_keys_for_1byte(ctx, days=14):
+    """Get unused keys based on the category where the command was invoked"""
+    data = await get_nodes_data_for_context(ctx)
+    if data is None:
+        return None
+
+    category_id = await get_category_id_from_context(ctx)
+    prefix_length = 2
+
+    # Load all repeaters (not filtered by days) to include future timestamps
+    contacts = data.get("data", []) if isinstance(data, dict) else data
+    if not isinstance(contacts, list):
+        return None
+
+    # Filter to repeaters only and normalize field names
+    repeaters = []
+    for contact in contacts:
+        if not isinstance(contact, dict):
+            continue
+        # Normalize field names (normalize_node is defined later in this file)
+        normalize_node(contact)
+        # Only include repeaters (device_role == 2)
+        if contact.get('device_role') == 2:
+            repeaters.append(contact)
+
+    # Load removed nodes to exclude them (category-specific)
+    removed_set = set()
+    removed_nodes_file = get_removed_nodes_file_for_category(category_id)
+    if os.path.exists(removed_nodes_file):
+        try:
+            with open(removed_nodes_file, 'r') as f:
+                removed_data = json.load(f)
+                for node in removed_data.get('data', []):
+                    node_prefix = node.get('public_key', '').upper() if node.get('public_key') else ''
+                    node_name = node.get('name', '').strip()
+                    if node_prefix and node_name:
+                        removed_set.add((node_prefix, node_name))
+        except Exception:
+            pass
+
+    # Get all currently used prefixes (excluding removed nodes)
+    used_keys = set()
+    for contact in repeaters:
+        full_pk = str(contact.get('public_key') or '').strip().upper()
+        contact_name = contact.get('name', '').strip()
+        if full_pk and (full_pk, contact_name) in removed_set:
+            continue
+        up = _repeater_used_prefix(contact, prefix_length)
+        if up:
+            used_keys.add(up)
 
     # Load reserved nodes (category-specific)
     reserved_set = set()
@@ -575,7 +835,24 @@ def normalize_node(node):
             node['device_role'] = node['role']
         if 'last_heard' in node and 'last_seen' not in node:
             node['last_seen'] = node['last_heard']
+        # JSON / APIs may send device_role as "2"; repeaters must still match == 2
+        dr = node.get('device_role')
+        if isinstance(dr, str):
+            s = dr.strip()
+            if s.isdigit():
+                node['device_role'] = int(s)
     return node
+
+
+def _repeater_used_prefix(contact, prefix_length: int) -> str | None:
+    """Uppercase public key prefix of length prefix_length, or None if missing/too short."""
+    pk = contact.get('public_key')
+    if not pk:
+        return None
+    s = str(pk).strip().upper()
+    if len(s) < prefix_length:
+        return None
+    return s[:prefix_length]
 
 
 def get_removed_nodes_set(removed_nodes_file="removedNodes.json"):
