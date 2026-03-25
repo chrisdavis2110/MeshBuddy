@@ -230,6 +230,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                     lat = location.get('latitude', 0)
                     lon = location.get('longitude', 0)
                     battery = repeater.get('battery_voltage', 0)
+                    hash_mode = repeater.get('hash_mode')
 
                     # Format last_seen timestamp
                     formatted_last_seen = "Unknown"
@@ -248,6 +249,9 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
 
                     message = f"Repeater {display_prefix}:\nName: {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n"
 
+                    if hash_mode is not None:
+                        message += f"Hash mode: {hash_mode}\n"
+
                     if battery != 0:
                         message += f"Battery Voltage: {battery} V\n"
                 else:
@@ -264,6 +268,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                         lat = location.get('latitude', 0)
                         lon = location.get('longitude', 0)
                         battery = repeater.get('battery_voltage', 0)
+                        hash_mode = repeater.get('hash_mode')
 
                         # Format last_seen timestamp
                         formatted_last_seen = "Unknown"
@@ -281,6 +286,10 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                                 formatted_last_seen = "Invalid timestamp"
 
                         message += f"**#{i}:** {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n"
+
+                        if hash_mode is not None:
+                            message += f"Hash mode: {hash_mode}\n"
+
                         if battery != 0:
                             message += f"Battery Voltage: {battery} V\n"
                         message += "\n"
