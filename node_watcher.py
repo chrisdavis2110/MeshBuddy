@@ -514,9 +514,9 @@ class NodeWatcher:
                 if reserved_prefix not in off_reserved_prefixes:
                     off_reserved_list.append(reserved_node)
                     off_reserved_prefixes.add(reserved_prefix)
-                    logger.info(f"{category_prefix}Repeater with public_key {matched_public_key[:self.prefix_length].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - moving to offReserved list")
+                    logger.info(f"Repeater with public_key {matched_public_key[:self.prefix_length].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - moving to offReserved list")
                 else:
-                    logger.info(f"{category_prefix}Repeater with public_key {matched_public_key[:self.prefix_length].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - already in offReserved list")
+                    logger.info(f"Repeater with public_key {matched_public_key[:self.prefix_length].upper()} and name '{matched_node.get('name', '').strip()}' matches reserved entry - already in offReserved list")
                 removed_any = True
             else:
                 # Keep this reserved node in the list
@@ -730,6 +730,57 @@ class NodeWatcher:
                 logger.error(f"Error in watcher loop: {e}")
                 time.sleep(CHECK_INTERVAL)
 
+
+def create_watchers(config, *, log_creation: bool = False):
+    """
+    Build NodeWatcher instances from config.
+
+    Returns:
+        (from_discord_section, watchers): True when paths come from ``[discord]`` (normal setup).
+        If ``[discord]`` is missing, uses the same default filenames and hash_size as ``[discord]`` fallbacks.
+    """
+    if config.has_section("discord"):
+        nodes_file = config.get("discord", "nodes_file", fallback="nodes.json")
+        removed_nodes_file = config.get("discord", "removed_nodes_file", fallback="removedNodes.json")
+        reserved_nodes_file = config.get("discord", "reserved_nodes_file", fallback="reservedNodes.json")
+        owners_file = config.get("discord", "owners_file", fallback="repeaterOwners.json")
+        try:
+            hash_size = config.getint("discord", "hash_size", fallback=2)
+        except (ValueError, TypeError):
+            hash_size = 2
+        hash_size = max(1, min(3, hash_size))
+        prefix_length = hash_size * 2
+        return True, [
+            NodeWatcher(
+                nodes_file,
+                reserved_nodes_file,
+                removed_nodes_file,
+                owners_file=owners_file,
+                prefix_length=prefix_length,
+            )
+        ]
+
+    # No [discord] (unusual); avoid config.get on a missing section
+    return True, [
+        NodeWatcher(
+            "nodes.json",
+            "reservedNodes.json",
+            "removedNodes.json",
+            owners_file="repeaterOwners.json",
+            prefix_length=4,
+        )
+    ]
+
+
+def run_all_checks_once(config=None):
+    """Run ``NodeWatcher.check()``."""
+    if config is None:
+        config = load_config("config.ini")
+    _from_discord, watchers = create_watchers(config, log_creation=False)
+    for watcher in watchers:
+        watcher.check()
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Node watcher')
@@ -740,33 +791,19 @@ def main():
     # Load config
     config = load_config("config.ini")
 
-    # Get file paths from [discord] section, with fallback to defaults
-    nodes_file = config.get("discord", "nodes_file", fallback="nodes.json")
-    removed_nodes_file = config.get("discord", "removed_nodes_file", fallback="removedNodes.json")
-    reserved_nodes_file = config.get("discord", "reserved_nodes_file", fallback="reservedNodes.json")
-    owners_file = config.get("discord", "owners_file", fallback="repeaterOwners.json")
-    # Prefix length from [discord].hash_size (1=2 hex, 2=4 hex, 3=6 hex)
-    try:
-        hash_size = config.getint("discord", "hash_size", fallback=2)
-    except (ValueError, TypeError):
-        hash_size = 2
-    hash_size = max(1, min(3, hash_size))
-    prefix_length = hash_size * 2
-
-    logger.info(f"Using nodes_file: {nodes_file}")
-    logger.info(f"Using removed_nodes_file: {removed_nodes_file}")
-    logger.info(f"Using reserved_nodes_file: {reserved_nodes_file}")
-    logger.info(f"Using owners_file: {owners_file}")
-    logger.info(f"Using prefix_length: {prefix_length}")
-
-    watcher = NodeWatcher(nodes_file, reserved_nodes_file, removed_nodes_file, owners_file=owners_file, prefix_length=prefix_length)
+    _from_discord_section, watchers = create_watchers(config, log_creation=True)
+    w0 = watchers[0]
+    logger.info("Using [discord] for node files and hash_size (or defaults if section missing).")
+    logger.info(f"Using nodes_file: {w0.nodes_file}")
+    logger.info(f"Using removed_nodes_file: {w0.removed_nodes_file}")
+    logger.info(f"Using reserved_nodes_file: {w0.reserved_nodes_file}")
+    logger.info(f"Using owners_file: {w0.owners_file}")
+    logger.info(f"Using prefix_length: {w0.prefix_length}")
 
     if args.watch:
-        # Watch mode - continuously monitor nodes.json
-        watcher.run()
+        w0.run()
     else:
-        # One-time check
-        watcher.check()
+        w0.check()
 
 
 if __name__ == "__main__":

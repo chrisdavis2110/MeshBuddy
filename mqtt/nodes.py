@@ -92,7 +92,8 @@ class NodeDataProcessor:
                     'name': api_node.get('name', ''),
                     'device_role': api_node.get('device_role', api_node.get('role', 1)),
                     'location': api_node.get('location', {'latitude': 0, 'longitude': 0}),
-                    'battery_voltage': api_node.get('battery_voltage', 0)
+                    'battery_voltage': api_node.get('battery_voltage', 0),
+                    'hash_mode': api_node.get('hash_mode', 0)
                 }
 
                 # Handle timestamps
@@ -221,6 +222,12 @@ class NodeDataProcessor:
             public_key = decoded.public_key
             app_data = decoded.app_data if hasattr(decoded, 'app_data') and decoded.app_data else {}
 
+            hash_mode = getattr(decoded, 'hash_mode', None)
+            if hash_mode is None and isinstance(app_data, dict):
+                hash_mode = app_data.get('hash_mode')
+            if hash_mode is not None and hasattr(hash_mode, 'value'):
+                hash_mode = hash_mode.value
+
             # Validate public_key
             if not public_key:
                 self.stats['decode_errors'] += 1
@@ -284,7 +291,8 @@ class NodeDataProcessor:
                 'device_role': self._get_device_role(app_data.get('device_role') if app_data else None),
                 'name': app_data.get('name', '') if app_data else '',
                 'location': app_data.get('location', {'latitude': 0, 'longitude': 0}) if app_data else {'latitude': 0, 'longitude': 0},
-                'battery_voltage': app_data.get('battery_voltage', 0) if app_data else 0
+                'battery_voltage': app_data.get('battery_voltage', 0) if app_data else 0,
+                'hash_mode': hash_mode
             }
 
             # # Add battery_voltage if available
