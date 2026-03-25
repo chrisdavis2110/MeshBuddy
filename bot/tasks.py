@@ -6,6 +6,7 @@ Contains background tasks and periodic functions:
 - periodic_channel_update: Runs the channel update function at regular intervals.
 - check_for_new_nodes: Periodically checks for new nodes in category-specific nodes files and sends notifications to the appropriate Discord channels.
 - periodic_node_watcher: Runs the new node checker at regular intervals.
+- periodic_node_watcher_file_sync: Runs node_watcher.py check logic on an interval (optional replacement for noderemoval.service).
 - purge_old_messages_from_channel: Purges messages older than a specified number of days from a given channel, with special handling for forum channels.
 - periodic_message_purge: Periodically purges messages older than a specified number of days from all configured messenger channels.
 - send_long_message: Sends a message that may exceed Discord's character limit by splitting into multiple messages.
@@ -21,6 +22,7 @@ from bot.utils import normalize_node, get_removed_nodes_set, get_server_emoji, i
 from bot.helpers import check_reserved_repeater_and_add_owner, assign_repeater_owner_role
 from bot.command_history import command_history
 from helpers import load_data_from_json
+from node_watcher import run_all_checks_once
 
 
 # ============================================================================
@@ -349,6 +351,28 @@ async def periodic_node_watcher():
             logger.error(f"Error in periodic node watcher: {e}")
             # Wait 60 seconds before retrying on error
             await asyncio.sleep(60)
+
+
+async def periodic_node_watcher_file_sync():
+    """
+    Run reserved/removed-node file maintenance (same as ``node_watcher.py`` without ``--watch``).
+    Enable via ``[node_watcher] enabled = true`` in config.ini; disable ``noderemoval.service`` to avoid duplicate work.
+    """
+    interval = 60
+    if config.has_section("node_watcher"):
+        try:
+            interval = config.getint("node_watcher", "interval_seconds", fallback=60)
+        except (ValueError, TypeError):
+            interval = 60
+    interval = max(15, interval)
+
+    await asyncio.sleep(15)
+    while True:
+        try:
+            await asyncio.to_thread(run_all_checks_once, config)
+        except Exception as e:
+            logger.error(f"Error in periodic node watcher file sync: {e}")
+        await asyncio.sleep(interval)
 
 
 # ============================================================================

@@ -779,6 +779,56 @@ def get_category_sections(config):
     return category_sections
 
 
+def create_watchers(config, *, log_creation: bool = False):
+    """
+    Build NodeWatcher instances from config.
+
+    Returns:
+        (is_fallback, watchers): is_fallback True when using default nodes.json paths.
+    """
+    category_sections = get_category_sections(config)
+    if not category_sections:
+        watcher = NodeWatcher("nodes.json", "reservedNodes.json", "removedNodes.json", prefix_length=4)
+        return True, [watcher]
+
+    watchers = []
+    if log_creation:
+        logger.info(f"Found {len(category_sections)} category section(s) to process")
+
+    for category_id, section in category_sections:
+        nodes_file = config.get(section, "nodes_file")
+        removed_nodes_file = config.get(section, "removed_nodes_file")
+        reserved_nodes_file = config.get(section, "reserved_nodes_file")
+        owners_file = config.get(section, "owners_file", fallback="repeaterOwners.json")
+        try:
+            hash_size = config.getint(section, "hash_size", fallback=2)
+        except (ValueError, TypeError):
+            hash_size = 2
+        hash_size = max(1, min(3, hash_size))
+        prefix_length = hash_size * 2
+
+        basename = os.path.basename(nodes_file)
+        category_name = None
+        if basename.startswith("nodes_") and basename.endswith(".json"):
+            category_name = basename[6:-5]
+
+        if log_creation:
+            logger.info(f"Creating watcher for category {category_id}: {nodes_file} (prefix_length={prefix_length})")
+        watcher = NodeWatcher(nodes_file, reserved_nodes_file, removed_nodes_file, category_id, owners_file, category_name, prefix_length)
+        watchers.append(watcher)
+
+    return False, watchers
+
+
+def run_all_checks_once(config=None):
+    """Run NodeWatcher.check() for every configured category (MeshBuddy periodic task or scripting)."""
+    if config is None:
+        config = load_config("config.ini")
+    _is_fallback, watchers = create_watchers(config, log_creation=False)
+    for watcher in watchers:
+        watcher.check()
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Node watcher')
@@ -789,46 +839,16 @@ def main():
     # Load config
     config = load_config("config.ini")
 
-    # Get all category sections
-    category_sections = get_category_sections(config)
+    is_fallback, watchers = create_watchers(config, log_creation=True)
 
-    if not category_sections:
+    if is_fallback:
         logger.warning("No category sections found with nodes_file, removed_nodes_file, and reserved_nodes_file")
         logger.info("Falling back to default files: nodes.json, reservedNodes.json, removedNodes.json")
-        # Fallback to default files if no category sections found (prefix_length=4 for 2-byte keyspace)
-        watcher = NodeWatcher("nodes.json", "reservedNodes.json", "removedNodes.json", prefix_length=4)
         if args.watch:
-            watcher.run()
+            watchers[0].run()
         else:
-            watcher.check()
+            watchers[0].check()
         return
-
-    logger.info(f"Found {len(category_sections)} category section(s) to process")
-
-    # Create watchers for each category
-    watchers = []
-    for category_id, section in category_sections:
-        nodes_file = config.get(section, "nodes_file")
-        removed_nodes_file = config.get(section, "removed_nodes_file")
-        reserved_nodes_file = config.get(section, "reserved_nodes_file")
-        owners_file = config.get(section, "owners_file", fallback="repeaterOwners.json")
-        # Prefix length from hash_size (1=2 hex, 2=4 hex, 3=6 hex)
-        try:
-            hash_size = config.getint(section, "hash_size", fallback=2)
-        except (ValueError, TypeError):
-            hash_size = 2
-        hash_size = max(1, min(3, hash_size))
-        prefix_length = hash_size * 2
-
-        # Extract category name from nodes_file (e.g., "nodes_socal.json" -> "socal")
-        basename = os.path.basename(nodes_file)
-        category_name = None
-        if basename.startswith("nodes_") and basename.endswith(".json"):
-            category_name = basename[6:-5]  # Remove "nodes_" prefix and ".json" suffix
-
-        logger.info(f"Creating watcher for category {category_id}: {nodes_file} (prefix_length={prefix_length})")
-        watcher = NodeWatcher(nodes_file, reserved_nodes_file, removed_nodes_file, category_id, owners_file, category_name, prefix_length)
-        watchers.append(watcher)
 
     if args.watch:
         # Watch mode - continuously monitor all category nodes files
@@ -845,7 +865,6 @@ def main():
                 logger.error(f"Error in watcher loop: {e}")
                 time.sleep(CHECK_INTERVAL)
     else:
-        # One-time check for all categories
         for watcher in watchers:
             watcher.check()
 

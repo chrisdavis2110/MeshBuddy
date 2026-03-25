@@ -28,6 +28,7 @@ from bot.helpers import (
 from bot.tasks import (
     periodic_channel_update,
     periodic_node_watcher,
+    periodic_node_watcher_file_sync,
     periodic_message_purge
 )
 
@@ -50,6 +51,10 @@ async def on_starting(event: hikari.StartingEvent):
     asyncio.create_task(periodic_channel_update())
     asyncio.create_task(periodic_node_watcher())
     asyncio.create_task(periodic_message_purge())
+
+    if config.has_section("node_watcher") and config.getboolean("node_watcher", "enabled", fallback=False):
+        asyncio.create_task(periodic_node_watcher_file_sync())
+        logger.info("In-process node_watcher file sync enabled ([node_watcher] in config.ini)")
 
     # Start MQTT subscriber or API polling based on config
     def start_mqtt_subscriber():
