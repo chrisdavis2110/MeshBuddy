@@ -466,13 +466,13 @@ class NodeWatcher:
         if not self.known_node_keys:
             self.known_node_keys = current_node_keys.copy()
             self.known_nodes_map = current_nodes_map.copy()
-            logger.info(f"{category_prefix}Initialized node watcher with {len(self.known_node_keys)} existing nodes")
+            # logger.info(f"{category_prefix}Initialized node watcher with {len(self.known_node_keys)} existing nodes")
             # Still check reserved nodes even on first run
         else:
             # Find keys that have disappeared (were seen before but not now)
             missing_keys = self.known_node_keys - current_node_keys
             if missing_keys:
-                logger.info(f"{category_prefix}Found {len(missing_keys)} node(s) that are no longer in {self.nodes_file}")
+                # logger.info(f"{category_prefix}Found {len(missing_keys)} node(s) that are no longer in {self.nodes_file}")
                 # Add missing nodes to removed list
                 self._add_missing_nodes_to_removed(missing_keys)
 
