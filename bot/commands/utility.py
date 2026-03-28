@@ -308,6 +308,8 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/unclaim <hex>` - Unclaim ownership of a repeater (owner or bot owner only)
 `/keygen <prefix>` - Generate a MeshCore keypair with a specific prefix
 `/help` - Show this help message
+
+-# Version: 1.5.1
 """
 
             await ctx.respond(help_message)
