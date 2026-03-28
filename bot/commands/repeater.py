@@ -250,7 +250,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                     message = f"Repeater {display_prefix}:\nName: {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n"
 
                     if hash_mode is not None:
-                        message += f"Hash mode: {hash_mode}\n"
+                        message += f"Hash size: {hash_mode}-byte \n"
 
                     if battery != 0:
                         message += f"Battery Voltage: {battery} V\n"
@@ -288,7 +288,7 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                         message += f"**#{i}:** {name}\nKey: {public_key}\nLast Seen: {formatted_last_seen}\nLocation: {lat}, {lon}\n"
 
                         if hash_mode is not None:
-                            message += f"Hash mode: {hash_mode}\n"
+                            message += f"Hash size: {hash_mode}-byte\n"
 
                         if battery != 0:
                             message += f"Battery Voltage: {battery} V\n"
