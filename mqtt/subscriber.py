@@ -441,20 +441,29 @@ class MQTTSubscriber:
         timestamp = datetime.now().isoformat()
         self.process_packet_to_nodes(topic, data, timestamp, region)
 
-    def on_disconnect(self, client, userdata, rc, *args):
-        """Callback for when client disconnects from broker"""
-        # Handle both API versions: VERSION1 uses int rc, VERSION2 uses ReasonCode object
-        if hasattr(rc, 'value'):
-            # VERSION2 API - rc is a ReasonCode object
-            reason_code = rc.value
-        else:
-            # VERSION1 API - rc is an int
-            reason_code = rc
+    def on_disconnect(self, client, userdata, arg3, *args):
+        """Callback for when client disconnects from broker.
 
-        if reason_code != 0:
-            self.logger.warning(f"Unexpected disconnection from broker (rc={reason_code})")
+        VERSION2 (used here): (client, userdata, disconnect_flags, reason_code, properties).
+        VERSION1 v3: (client, userdata, rc). VERSION1 v5: (client, userdata, reason_code, properties).
+        """
+        if hasattr(arg3, "is_disconnect_packet_from_server"):
+            disconnect_flags, reason_code = arg3, args[0] if args else None
         else:
+            disconnect_flags, reason_code = None, arg3
+
+        # ReasonCode compares to int; VERSION1 rc is already an int (MQTT_ERR_SUCCESS == 0).
+        if reason_code == 0:
             self.logger.info("Disconnected from broker")
+        else:
+            extra = (
+                f", disconnect_flags={disconnect_flags}"
+                if disconnect_flags is not None
+                else ""
+            )
+            self.logger.warning(
+                f"Unexpected disconnection from broker (reason_code={reason_code}{extra})"
+            )
 
     def fetch_from_api(self):
         """Fetch node data from API and update all processors"""
