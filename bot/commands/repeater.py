@@ -4,7 +4,7 @@ Repeater Commands
 Commands for viewing and querying repeater information:
 - prefix: Check if a hex prefix is available
 - stats: Get detailed stats of a repeater by hex prefix
-- phash: Count repeaters by public-key hash size (1–3 bytes), or list repeaters for a given size
+- phash: Count repeaters by hash size (1–3 bytes), or list repeaters for a given size
 """
 
 import json

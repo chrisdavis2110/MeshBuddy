@@ -904,7 +904,7 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/keygen <prefix>` - Generate a MeshCore keypair with a specific prefix
 `/help` - Show this help message
 
--# Version: 1.5.1
+-# Version: 1.6.0
 """
 
             await ctx.respond(help_message)
