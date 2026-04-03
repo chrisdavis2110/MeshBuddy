@@ -4,6 +4,7 @@ Repeater Commands
 Commands for viewing and querying repeater information:
 - prefix: Check if a hex prefix is available
 - stats: Get detailed stats of a repeater by hex prefix
+- phash: Count repeaters by public-key hash size (1–3 bytes), or list repeaters for a given size
 """
 
 import json
@@ -21,7 +22,27 @@ from bot.utils import (
     normalize_node,
     is_node_removed,
     validate_hex_prefix_for_category,
+    extract_prefix_for_sort,
 )
+from bot.tasks import send_long_message
+
+
+def _repeater_hash_mode_bytes(contact: dict) -> int | None:
+    """Return clamped hash size in bytes (1–3) from node hash_mode, or None if missing/invalid."""
+    hm = contact.get("hash_mode")
+    if hm is None:
+        return None
+    if hasattr(hm, "value"):
+        hm = hm.value
+    try:
+        n = int(hm)
+    except (TypeError, ValueError):
+        return None
+    if n < 1:
+        return 1
+    if n > 3:
+        return 3
+    return n
 
 
 @client.register()
@@ -344,3 +365,98 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
         except Exception as e:
             logger.error(f"Error in stats command: {e}")
             await ctx.respond("Error retrieving repeater stats.", flags=hikari.MessageFlag.EPHEMERAL)
+
+
+@client.register()
+class PhashCommand(lightbulb.SlashCommand, name="phash",
+    description="List repeaters by hash size",
+    hooks=[category_check]):
+
+    hash_size = lightbulb.integer(
+        "hash_size",
+        "Hash size in bytes (1–3)",
+        default=None,
+        min_value=1,
+        max_value=3,
+    )
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context):
+        """Summarize or list repeaters by hash_mode."""
+        try:
+            data = await get_nodes_data_for_context(ctx)
+            if data is None:
+                await ctx.respond("Error loading repeater data.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            contacts = data.get("data", []) if isinstance(data, dict) else data
+            if not isinstance(contacts, list):
+                await ctx.respond("Error loading repeater data.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
+
+            repeaters = []
+            for contact in contacts:
+                if not isinstance(contact, dict):
+                    continue
+                normalize_node(contact)
+                if contact.get("device_role") == 2:
+                    repeaters.append(contact)
+
+            removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
+            repeaters = [r for r in repeaters if not is_node_removed(r, removed_nodes_file)]
+
+            if self.hash_size is None:
+                c1 = c2 = c3 = c_unknown = 0
+                for r in repeaters:
+                    hm = _repeater_hash_mode_bytes(r)
+                    if hm == 1:
+                        c1 += 1
+                    elif hm == 2:
+                        c2 += 1
+                    elif hm == 3:
+                        c3 += 1
+                    else:
+                        c_unknown += 1
+                total = len(repeaters)
+                msg = (
+                    "**Repeaters by hash size**\n"
+                    f"1-byte: **{c1}**\n"
+                    f"2-byte: **{c2}**\n"
+                    f"3-byte: **{c3}**\n"
+                )
+                if c_unknown:
+                    msg += f"No hash size reported: **{c_unknown}**\n"
+                msg += f"Total repeaters: **{total}**"
+                await ctx.respond(msg)
+                return
+
+            hs = int(self.hash_size)
+            if hs < 1:
+                hs = 1
+            elif hs > 3:
+                hs = 3
+
+            plen = hs * 2
+            matched = []
+            for r in repeaters:
+                if _repeater_hash_mode_bytes(r) == hs:
+                    matched.append(r)
+
+            if not matched:
+                await ctx.respond(f"No repeaters with {hs}-byte hash size.")
+                return
+
+            lines = []
+            for contact in matched:
+                pk = (contact.get("public_key") or "").strip().upper()
+                prefix = pk[:plen] if len(pk) >= plen else (pk or "????")
+                name = contact.get("name", "Unknown")
+                lines.append(f"{prefix}: {name}")
+
+            lines.sort(key=extract_prefix_for_sort)
+            header = f"Repeaters with {hs}-byte hash size:"
+            footer = f"Total: {len(matched)}"
+            await send_long_message(ctx, header, lines, footer)
+        except Exception as e:
+            logger.error(f"Error in phash command: {e}")
+            await ctx.respond("Error running /phash.", flags=hikari.MessageFlag.EPHEMERAL)
