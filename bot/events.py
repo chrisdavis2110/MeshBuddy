@@ -29,7 +29,8 @@ from bot.tasks import (
     periodic_channel_update,
     periodic_node_watcher,
     periodic_node_watcher_file_sync,
-    periodic_message_purge
+    periodic_message_purge,
+    periodic_purge_stale_regional_nodes,
 )
 
 
@@ -55,6 +56,10 @@ async def on_starting(event: hikari.StartingEvent):
     if config.has_section("node_watcher") and config.getboolean("node_watcher", "enabled", fallback=False):
         asyncio.create_task(periodic_node_watcher_file_sync())
         logger.info("In-process node_watcher file sync enabled ([node_watcher] in config.ini)")
+
+    if config.has_section("stale_nodes_purge") and config.getboolean("stale_nodes_purge", "enabled", fallback=False):
+        asyncio.create_task(periodic_purge_stale_regional_nodes())
+        logger.info("Stale regional nodes purge enabled ([stale_nodes_purge] in config.ini)")
 
     # Start MQTT subscriber or API polling based on config
     def start_mqtt_subscriber():

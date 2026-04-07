@@ -9,6 +9,7 @@ Contains background tasks and periodic functions:
 - periodic_node_watcher_file_sync: Runs node_watcher.py check logic on an interval (optional replacement for noderemoval.service).
 - purge_old_messages_from_channel: Purges messages older than a specified number of days from a given channel, with special handling for forum channels.
 - periodic_message_purge: Periodically purges messages older than a specified number of days from all configured messenger channels.
+- periodic_purge_stale_regional_nodes: Optionally removes nodes not seen for N days from regional nodes_*.json files ([stale_nodes_purge] in config.ini).
 - send_long_message: Sends a message that may exceed Discord's character limit by splitting into multiple messages.
 """
 
@@ -23,6 +24,7 @@ from bot.helpers import check_reserved_repeater_and_add_owner, assign_repeater_o
 from bot.command_history import command_history
 from helpers import load_data_from_json
 from node_watcher import run_all_checks_once
+from helpers.stale_nodes import purge_stale_nodes_from_regional_files, stale_after_days_from_config
 
 
 # ============================================================================
@@ -351,6 +353,46 @@ async def periodic_node_watcher():
             logger.error(f"Error in periodic node watcher: {e}")
             # Wait 60 seconds before retrying on error
             await asyncio.sleep(60)
+
+
+def _purge_stale_regional_nodes_thread(stale_after_days: int, use_glob: bool) -> None:
+    """Run stale-node purge using process-wide config (safe for asyncio.to_thread)."""
+    purge_stale_nodes_from_regional_files(
+        config,
+        stale_after_days=stale_after_days,
+        quiet=True,
+        use_glob=use_glob,
+    )
+
+
+async def periodic_purge_stale_regional_nodes():
+    """
+    Periodically drop entries from regional ``nodes_*.json`` whose ``last_seen`` / ``last_heard``
+    is at least N days old. Enable with ``[stale_nodes_purge] enabled = true``.
+
+    Threshold: ``stale_after_days`` or ``days`` in that section (default 30).
+    """
+    stale_after_days = stale_after_days_from_config(config, fallback=30)
+    use_glob = True
+    interval = 86400
+    if config.has_section("stale_nodes_purge"):
+        use_glob = config.getboolean("stale_nodes_purge", "use_glob", fallback=True)
+        try:
+            interval = max(3600, config.getint("stale_nodes_purge", "interval_seconds", fallback=86400))
+        except (ValueError, TypeError):
+            interval = 86400
+
+    await asyncio.sleep(120)
+    while True:
+        try:
+            await asyncio.to_thread(
+                _purge_stale_regional_nodes_thread,
+                stale_after_days,
+                use_glob,
+            )
+        except Exception as e:
+            logger.error(f"Error in periodic stale regional nodes purge: {e}")
+        await asyncio.sleep(interval)
 
 
 async def periodic_node_watcher_file_sync():
