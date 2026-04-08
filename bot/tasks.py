@@ -9,7 +9,7 @@ Contains background tasks and periodic functions:
 - periodic_node_watcher_file_sync: Runs node_watcher.py check logic on an interval (optional replacement for noderemoval.service).
 - purge_old_messages_from_channel: Purges messages older than a specified number of days from a given channel, with special handling for forum channels.
 - periodic_message_purge: Periodically purges messages older than a specified number of days from all configured messenger channels.
-- periodic_purge_stale_regional_nodes: Optionally removes nodes not seen for N days from regional nodes_*.json files ([stale_nodes_purge] in config.ini).
+- periodic_purge_stale_regional_nodes: Optionally removes stale entries from regional nodes_*.json and removedNodes_*.json files ([stale_nodes_purge] in config.ini).
 - send_long_message: Sends a message that may exceed Discord's character limit by splitting into multiple messages.
 """
 

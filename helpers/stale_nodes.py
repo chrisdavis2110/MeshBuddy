@@ -1,5 +1,5 @@
 """
-Purge nodes whose last_seen is older than a threshold from regional nodes_*.json files.
+Purge stale entries from regional nodes/removedNodes JSON files.
 """
 
 from __future__ import annotations
@@ -40,8 +40,17 @@ def _is_regional_nodes_basename(name: str) -> bool:
     return base.startswith("nodes_") and base.endswith(".json")
 
 
-def regional_nodes_files_from_config(config) -> list[str]:
-    """Unique nodes_file paths from numeric category sections that use regional nodes_*.json."""
+def _is_regional_removed_nodes_basename(name: str) -> bool:
+    base = os.path.basename(name)
+    return base.startswith("removedNodes_") and base.endswith(".json")
+
+
+def regional_data_files_from_config(config) -> list[str]:
+    """
+    Unique file paths from numeric category sections for:
+    - nodes_file => nodes_*.json
+    - removed_nodes_file => removedNodes_*.json
+    """
     seen: set[str] = set()
     out: list[str] = []
     for section in config.sections():
@@ -49,14 +58,15 @@ def regional_nodes_files_from_config(config) -> list[str]:
             int(section)
         except (ValueError, TypeError):
             continue
-        if not config.has_option(section, "nodes_file"):
-            continue
-        nf = config.get(section, "nodes_file", fallback="nodes.json").strip()
-        if not nf or not _is_regional_nodes_basename(nf):
-            continue
-        if nf not in seen:
-            seen.add(nf)
-            out.append(nf)
+        nodes_file = config.get(section, "nodes_file", fallback="nodes.json").strip()
+        if nodes_file and _is_regional_nodes_basename(nodes_file) and nodes_file not in seen:
+            seen.add(nodes_file)
+            out.append(nodes_file)
+
+        removed_file = config.get(section, "removed_nodes_file", fallback="removedNodes.json").strip()
+        if removed_file and _is_regional_removed_nodes_basename(removed_file) and removed_file not in seen:
+            seen.add(removed_file)
+            out.append(removed_file)
     return out
 
 
@@ -92,11 +102,8 @@ def purge_stale_nodes_from_regional_files(
     use_glob: bool = True,
 ) -> list[tuple[str, int, int]]:
     """
-    Remove nodes with last_seen (or last_heard) at least stale_after_days ago from each
-    regional file. Nodes without a parseable last_seen/last_heard are kept.
-
-    Files are discovered from config (per-category nodes_file) and optionally by globbing
-    nodes_*.json under the data root.
+    Remove entries with last_seen (or last_heard) at least stale_after_days ago from each
+    regional data file. Entries without a parseable last_seen/last_heard are kept.
 
     Returns:
         List of (absolute path, removed_count, kept_count) for each file processed.
@@ -106,12 +113,15 @@ def purge_stale_nodes_from_regional_files(
     root = _data_root(data_dir)
 
     abs_paths: set[str] = set()
-    for nf in regional_nodes_files_from_config(config):
+    for nf in regional_data_files_from_config(config):
         abs_paths.add(os.path.normpath(os.path.join(root, nf)))
 
     if use_glob:
         for p in glob.glob(os.path.join(root, "nodes_*.json")):
             if _is_regional_nodes_basename(p):
+                abs_paths.add(os.path.normpath(p))
+        for p in glob.glob(os.path.join(root, "removedNodes_*.json")):
+            if _is_regional_removed_nodes_basename(p):
                 abs_paths.add(os.path.normpath(p))
 
     results: list[tuple[str, int, int]] = []
