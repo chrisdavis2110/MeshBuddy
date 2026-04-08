@@ -22,9 +22,34 @@ logger = logging.getLogger(__name__)
 # Load configuration
 config = load_config("config.ini")
 
+
+def _suppress_stale_heartbeat_on_gateway_close(_: hikari.StartingEvent) -> None:
+    """Avoid asyncio ERROR spam when Discord drops the socket during Hikari's heartbeat."""
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def exception_handler(l: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        if (
+            context.get("message") == "Task exception was never retrieved"
+            and exc is not None
+            and exc.__class__.__name__ == "ClientConnectionResetError"
+            and "closing transport" in str(exc)
+        ):
+            logger.debug("Stale gateway heartbeat on closed socket during reconnect: %s", exc)
+            return
+        if previous is not None:
+            previous(l, context)
+        else:
+            l.default_exception_handler(context)
+
+    loop.set_exception_handler(exception_handler)
+
+
 # Initialize bot and client
 bot = hikari.GatewayBot(config.get("discord", "token"))
 client = lightbulb.client_from_app(bot)
+bot.subscribe(hikari.StartingEvent, _suppress_stale_heartbeat_on_gateway_close)
 bot.subscribe(hikari.StartingEvent, client.start)
 
 # Constants
