@@ -10,6 +10,7 @@ Contains background tasks and periodic functions:
 - periodic_node_watcher_file_sync: Runs node_watcher.py check logic on an interval (optional replacement for noderemoval.service).
 - purge_old_messages_from_channel: Purges messages older than a specified number of days from a given channel, with special handling for forum channels.
 - periodic_message_purge: Periodically purges messages older than a specified number of days from all configured messenger channels.
+- periodic_purge_stale_nodes: Optionally removes nodes not seen for N days from nodes.json and removedNodes.json files ([stale_nodes_purge] in config.ini).
 - send_long_message: Sends a message that may exceed Discord's character limit by splitting into multiple messages.
 """
 
@@ -24,6 +25,7 @@ from bot.utils import normalize_node, get_removed_nodes_set, get_server_emoji, i
 from bot.helpers import check_reserved_repeater_and_add_owner, assign_repeater_owner_role
 from helpers import load_data_from_json
 from node_watcher import run_all_checks_once
+from helpers.stale_nodes import purge_stale_nodes, stale_after_days_from_config
 
 
 # ============================================================================
@@ -337,6 +339,42 @@ async def periodic_node_watcher():
             logger.error(f"Error in periodic node watcher: {e}")
             # Wait 60 seconds before retrying on error
             await asyncio.sleep(60)
+
+
+def _purge_stale_nodes_thread(stale_after_days: int) -> None:
+    """Run stale-node purge (safe for asyncio.to_thread)."""
+    purge_stale_nodes(
+        stale_after_days=stale_after_days,
+        quiet=True,
+    )
+
+
+async def periodic_purge_stale_nodes():
+    """
+    Periodically drop entries from ``nodes.json`` and ``removedNodes.json`` whose
+    ``last_seen`` / ``last_heard`` is at least N days old. Enable with
+    ``[stale_nodes_purge] enabled = true``.
+
+    Threshold: ``stale_after_days`` or ``days`` in that section (default 30).
+    """
+    stale_after_days = stale_after_days_from_config(config, fallback=30)
+    interval = 86400
+    if config.has_section("stale_nodes_purge"):
+        try:
+            interval = max(3600, config.getint("stale_nodes_purge", "interval_seconds", fallback=86400))
+        except (ValueError, TypeError):
+            interval = 86400
+
+    await asyncio.sleep(120)
+    while True:
+        try:
+            await asyncio.to_thread(
+                _purge_stale_nodes_thread,
+                stale_after_days,
+            )
+        except Exception as e:
+            logger.error(f"Error in periodic stale nodes purge: {e}")
+        await asyncio.sleep(interval)
 
 
 async def periodic_node_watcher_file_sync():

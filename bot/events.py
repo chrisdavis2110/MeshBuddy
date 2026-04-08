@@ -15,7 +15,7 @@ import asyncio
 import threading
 from datetime import datetime
 import hikari
-from bot.core import bot, config, logger, CROSS, pending_remove_selections, pending_qr_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections, pending_release_selections
+from bot.core import bot, config, logger, CHECK, CROSS, pending_remove_selections, pending_qr_selections, pending_own_selections, pending_unclaim_selections, pending_owner_selections, pending_release_selections
 from bot.utils import get_owner_file_for_channel, get_server_emoji, get_prefix_length_for_channel_id
 from bot.helpers import (
     generate_and_send_qr,
@@ -27,7 +27,8 @@ from bot.helpers import (
 from bot.tasks import (
     periodic_channel_update,
     periodic_node_watcher,
-    periodic_node_watcher_file_sync
+    periodic_node_watcher_file_sync,
+    periodic_purge_stale_nodes
 )
 
 
@@ -81,6 +82,10 @@ async def on_starting(event: hikari.StartingEvent):
     if config.has_section("node_watcher") and config.getboolean("node_watcher", "enabled", fallback=False):
         asyncio.create_task(periodic_node_watcher_file_sync())
         logger.info("In-process node_watcher file sync enabled ([node_watcher] in config.ini)")
+
+    if config.has_section("stale_nodes_purge") and config.getboolean("stale_nodes_purge", "enabled", fallback=False):
+        asyncio.create_task(periodic_purge_stale_nodes())
+        logger.info("Stale nodes purge enabled ([stale_nodes_purge] in config.ini)")
 
     # Start MQTT subscriber or API polling based on config
     def start_mqtt_subscriber():
@@ -211,10 +216,6 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                             reserved_data["timestamp"] = datetime.now().isoformat()
                             with open(reserved_nodes_file, "w") as f:
                                 json.dump(reserved_data, f, indent=2)
-                            channel = await bot.rest.fetch_channel(interaction.channel_id)
-                            category_id = getattr(channel, "parent_id", None)
-                            if category_id:
-                                command_history.mark_reservation_released(category_id)
                             await interaction.create_initial_response(
                                 hikari.ResponseType.MESSAGE_UPDATE,
                                 f"{CHECK} Released hex prefix {hex_prefix}",

@@ -23,7 +23,7 @@ def get_data_dir(data_dir=None):
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
 
-def save_data_to_json(data, filename="nodes.json", data_dir=None):
+def save_data_to_json(data, filename="nodes.json", data_dir=None, quiet=False):
     """Save data to JSON file with timestamp"""
     data_dir = get_data_dir(data_dir)
     try:
@@ -48,7 +48,8 @@ def save_data_to_json(data, filename="nodes.json", data_dir=None):
         with open(filepath, 'w') as f:
             json.dump(data_with_timestamp, f, indent=2)
 
-        print(f"Data saved to {filepath} (sorted by public_key)")
+        if not quiet:
+            print(f"Data saved to {filepath} (sorted by public_key)")
         return True
     except Exception as e:
         logger.error(f"Error saving data to JSON: {str(e)}")
