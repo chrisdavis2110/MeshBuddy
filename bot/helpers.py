@@ -42,6 +42,9 @@ from bot.utils import (
 async def generate_and_send_qr(contact, ctx_or_interaction):
     """Generate QR code for a contact and send it"""
     try:
+        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+            await ctx_or_interaction.create_initial_response(hikari.ResponseType.DEFERRED_MESSAGE_UPDATE)
+
         name = contact.get('name', 'Unknown')
         public_key = contact.get('public_key', '')
         device_role = contact.get('device_role', 2)
@@ -49,8 +52,7 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
         if not public_key:
             error_msg = f"{CROSS} Error: Contact has no public key"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_msg,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -95,8 +97,7 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
         file_obj = hikari.Bytes(img_data, filename)
 
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(
-                hikari.ResponseType.MESSAGE_UPDATE,
+            await ctx_or_interaction.edit_initial_response(
                 message,
                 attachments=[file_obj],
                 components=None,
@@ -112,8 +113,7 @@ async def generate_and_send_qr(contact, ctx_or_interaction):
         logger.error(f"Error generating QR code: {e}")
         error_message = f"{CROSS} Error generating QR code: {str(e)}"
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(
-                hikari.ResponseType.MESSAGE_UPDATE,
+            await ctx_or_interaction.edit_initial_response(
                 error_message,
                 components=None,
                 flags=hikari.MessageFlag.EPHEMERAL
@@ -309,6 +309,8 @@ async def can_user_remove_repeater(repeater, user_id: int, ctx_or_interaction) -
 
 async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
     """Process the ownership claim of a repeater and add to repeaterOwners.json (category-specific)"""
+    if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+        await ctx_or_interaction.create_initial_response(hikari.ResponseType.DEFERRED_MESSAGE_UPDATE)
     try:
         # Get category-specific owner file
         if isinstance(ctx_or_interaction, lightbulb.Context):
@@ -352,8 +354,7 @@ async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
         if not public_key:
             error_msg = f"{CROSS} Error: Repeater has no public key"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_msg,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -405,8 +406,7 @@ async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
             else:
                 message = f"{WARN} Repeater {prefix}: {name} is already claimed by **{existing_username}**"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     message,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -459,8 +459,7 @@ async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
             message = f"{CHECK} Successfully claimed repeater {prefix}: **{name}**"
 
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(
-                hikari.ResponseType.MESSAGE_UPDATE,
+            await ctx_or_interaction.edit_initial_response(
                 message,
                 components=None,
                 flags=hikari.MessageFlag.EPHEMERAL
@@ -471,8 +470,7 @@ async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
         logger.error(f"Error processing repeater ownership: {e}")
         error_message = f"{CROSS} Error claiming repeater: {str(e)}"
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(
-                hikari.ResponseType.MESSAGE_UPDATE,
+            await ctx_or_interaction.edit_initial_response(
                 error_message,
                 components=None,
                 flags=hikari.MessageFlag.EPHEMERAL
@@ -483,6 +481,8 @@ async def process_repeater_ownership(selected_repeater, ctx_or_interaction):
 
 async def process_repeater_removal(selected_repeater, ctx_or_interaction):
     """Process the removal of a repeater to removedNodes.json (category-specific)"""
+    if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+        await ctx_or_interaction.create_initial_response(hikari.ResponseType.DEFERRED_MESSAGE_UPDATE)
     try:
         # Get user ID from context/interaction
         if isinstance(ctx_or_interaction, lightbulb.Context):
@@ -495,10 +495,9 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
         if not user_id:
             error_message = f"{CROSS} Unable to identify user"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_message,
-                    components=None
+                    components=None,
                 )
             else:
                 await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
@@ -509,10 +508,9 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
         if not can_remove:
             error_message = f"{CROSS} {reason}"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_message,
-                    components=None
+                    components=None,
                 )
             else:
                 await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
@@ -572,10 +570,9 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
             prefix_length = await get_prefix_length_for_channel_id(ctx_or_interaction.channel_id)
             message = f"{WARN} Repeater {selected_prefix[:prefix_length]}: {selected_name} has already been removed"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     message,
-                    components=None
+                    components=None,
                 )
             else:
                 await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
@@ -593,10 +590,9 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
         message = f"{CHECK} Repeater {selected_prefix[:prefix_length]}: {selected_name} has been removed"
 
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(
-                hikari.ResponseType.MESSAGE_UPDATE,
+            await ctx_or_interaction.edit_initial_response(
                 message,
-                components=None
+                components=None,
             )
         else:
             await ctx_or_interaction.respond(message, flags=hikari.MessageFlag.EPHEMERAL)
@@ -604,10 +600,9 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
         logger.error(f"Error processing repeater removal: {e}")
         error_message = f"{CROSS} Error removing repeater: {str(e)}"
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(
-                hikari.ResponseType.MESSAGE_UPDATE,
+            await ctx_or_interaction.edit_initial_response(
                 error_message,
-                components=None
+                components=None,
             )
         else:
             await ctx_or_interaction.respond(error_message, flags=hikari.MessageFlag.EPHEMERAL)
@@ -615,6 +610,8 @@ async def process_repeater_removal(selected_repeater, ctx_or_interaction):
 
 async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
     """Process the unclaiming of a repeater and remove from repeaterOwners.json (category-specific)"""
+    if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
+        await ctx_or_interaction.create_initial_response(hikari.ResponseType.DEFERRED_MESSAGE_UPDATE)
     try:
         # Get user ID from context/interaction
         if isinstance(ctx_or_interaction, lightbulb.Context):
@@ -627,8 +624,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         if not user_id:
             error_message = f"{CROSS} Unable to identify user"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_message,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -642,8 +638,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         if not can_unclaim:
             error_message = f"{CROSS} {reason}"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_message,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -669,8 +664,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         if not public_key:
             error_msg = f"{CROSS} Error: Repeater has no public key"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_msg,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -683,8 +677,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         if not os.path.exists(owner_file):
             error_msg = f"{CROSS} Repeater is not claimed"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_msg,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -701,8 +694,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
                 else:
                     error_msg = f"{CROSS} Repeater is not claimed"
                     if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                        await ctx_or_interaction.create_initial_response(
-                            hikari.ResponseType.MESSAGE_UPDATE,
+                        await ctx_or_interaction.edit_initial_response(
                             error_msg,
                             components=None,
                             flags=hikari.MessageFlag.EPHEMERAL
@@ -713,8 +705,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         except json.JSONDecodeError:
             error_msg = f"{CROSS} Error reading owner file"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_msg,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -735,8 +726,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         if not owner_removed:
             error_msg = f"{CROSS} Repeater is not claimed"
             if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-                await ctx_or_interaction.create_initial_response(
-                    hikari.ResponseType.MESSAGE_UPDATE,
+                await ctx_or_interaction.edit_initial_response(
                     error_msg,
                     components=None,
                     flags=hikari.MessageFlag.EPHEMERAL
@@ -758,8 +748,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         message = f"{CHECK} Successfully unclaimed repeater {prefix}: **{name}**"
 
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(
-                hikari.ResponseType.MESSAGE_UPDATE,
+            await ctx_or_interaction.edit_initial_response(
                 message,
                 components=None,
                 flags=hikari.MessageFlag.EPHEMERAL
@@ -773,8 +762,7 @@ async def process_repeater_unclaim(selected_repeater, ctx_or_interaction):
         logger.error(f"Error processing repeater unclaim: {e}")
         error_message = f"{CROSS} Error unclaiming repeater: {str(e)}"
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(
-                hikari.ResponseType.MESSAGE_UPDATE,
+            await ctx_or_interaction.edit_initial_response(
                 error_message,
                 components=None,
                 flags=hikari.MessageFlag.EPHEMERAL

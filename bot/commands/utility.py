@@ -902,6 +902,7 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/claim <hex>` - Claim ownership of a repeater
 `/unclaim <hex>` - Unclaim ownership of a repeater (owner or bot owner only)
 `/keygen <prefix>` - Generate a MeshCore keypair with a specific prefix
+`/phash <size>` - Get list of repeaters by hash size (1–3 bytes), or list repeater counts for a given size
 `/help` - Show this help message
 
 -# Version: 1.6.1

@@ -293,8 +293,12 @@ async def check_for_new_nodes():
                         lat = location.get('latitude', 0)
                         lon = location.get('longitude', 0)
                         if lat != 0 and lon != 0:
-                            # Get meshmap URL from config
-                            meshmap_url = config.get("meshmap", "url", fallback=None)
+                            # Per-category map URL overrides [meshmap] url for this notification
+                            category_section = str(category_id)
+                            meshmap_url = (
+                                (config.get(category_section, "map_url", fallback=None) or "").strip()
+                                or config.get("meshmap", "url", fallback=None)
+                            )
                             if meshmap_url:
                                 # Build URL with location query parameters
                                 location_link = f"{meshmap_url}?lat={lat}&long={lon}&zoom=10"

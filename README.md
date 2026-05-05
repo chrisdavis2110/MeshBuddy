@@ -224,7 +224,7 @@ All files use the same structure:
 
 The bot automatically:
 - Monitors `nodes.json` for new nodes and sends Discord notifications
-- Includes location links in new node alerts (if node has location data) pointing to the configured meshmap
+- Includes location links in new node alerts (if node has location data) pointing to the category `map_url` or the global meshmap URL
 - Updates the repeater status channel name with counts (✅ online, ⚠️ offline, ❌ dead, ⏳ reserved)
 - Processes all nodes from a single `nodes.json` file
 
@@ -272,10 +272,11 @@ LAX = socal
 will take and data from the LAX topic and place it into files label _socal.json, ie nodes_socal.json
 
 ### MeshMap Section
-- `url`: Base URL for the mesh map. Location links in new node notifications will use this URL with `?lat=...&long=...` appended.
+- `url`: Default base URL for the mesh map when a category does not set `map_url`. Location links in new node notifications append `?lat=...&long=...&zoom=10` to this base URL.
 
 ### Cetgory Section
 Create separate categories in Discord and use the category ID as the section header
+- `map_url`: Optional base URL for map links in **new repeater** Discord alerts for this category. If omitted or empty, `[meshmap] url` is used. Same query string as the global default (`?lat=...&long=...&zoom=10`).
 - `nodes_file`: The name of the nodes file for this section, ie nodes_socal.json
 - `removed_nodes_file`: The name of the removed nodes file for this section, ie removedNodes_socal.json
 - `reserved_nodes_file`: The name of the reserved nodes file for this section, ie reservedNodes_socal.json
