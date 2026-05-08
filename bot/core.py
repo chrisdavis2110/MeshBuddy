@@ -46,15 +46,9 @@ async def _suppress_stale_heartbeat_on_gateway_close(_: hikari.StartingEvent) ->
     loop.set_exception_handler(exception_handler)
 
 
-@lightbulb.hook(lightbulb.ExecutionSteps.PRE_INVOKE, skip_when_failed=True)
-async def defer_slash_thinking(pl: lightbulb.ExecutionPipeline, ctx: lightbulb.Context) -> None:
-    """Acknowledge slash commands immediately so Discord gets a response within 3s; final text replaces loading."""
-    await ctx.defer()
-
-
 # Initialize bot and client
 bot = hikari.GatewayBot(config.get("discord", "token"))
-client = lightbulb.client_from_app(bot, hooks=[defer_slash_thinking])
+client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, _suppress_stale_heartbeat_on_gateway_close)
 bot.subscribe(hikari.StartingEvent, client.start)
 

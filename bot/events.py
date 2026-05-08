@@ -180,7 +180,6 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                         )
                         del pending_release_selections[custom_id]
                     else:
-                        await interaction.create_initial_response(hikari.ResponseType.DEFERRED_MESSAGE_UPDATE)
                         try:
                             with open(reserved_nodes_file, "r") as f:
                                 reserved_data = json.load(f)
@@ -195,13 +194,15 @@ async def on_component_interaction(event: hikari.InteractionCreateEvent):
                             category_id = getattr(channel, "parent_id", None)
                             if category_id:
                                 command_history.mark_reservation_released(category_id)
-                            await interaction.edit_initial_response(
+                            await interaction.create_initial_response(
+                                hikari.ResponseType.MESSAGE_UPDATE,
                                 f"{CHECK} Released hex prefix {hex_prefix}",
                                 components=None,
                             )
                         except Exception as e:
                             logger.error(f"Error processing release selection: {e}")
-                            await interaction.edit_initial_response(
+                            await interaction.create_initial_response(
+                                hikari.ResponseType.MESSAGE_UPDATE,
                                 f"{CROSS} Error releasing: {str(e)}",
                                 components=None,
                                 flags=hikari.MessageFlag.EPHEMERAL
@@ -483,9 +484,6 @@ async def display_owner_info(repeater, owner_file: str, ctx_or_interaction):
     try:
         from bot.core import WARN
 
-        if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.create_initial_response(hikari.ResponseType.DEFERRED_MESSAGE_UPDATE)
-
         public_key = repeater.get('public_key', '')
         name = repeater.get('name', 'Unknown')
         prefix_length = await get_prefix_length_for_channel_id(ctx_or_interaction.channel_id)
@@ -511,7 +509,8 @@ async def display_owner_info(repeater, owner_file: str, ctx_or_interaction):
             message += f"{WARN} No owner claimed for this repeater"
 
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.edit_initial_response(
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
                 message,
                 components=None,
                 flags=hikari.MessageFlag.EPHEMERAL
@@ -522,7 +521,8 @@ async def display_owner_info(repeater, owner_file: str, ctx_or_interaction):
         logger.error(f"Error displaying owner info: {e}")
         error_message = f"Error displaying owner information: {str(e)}"
         if isinstance(ctx_or_interaction, hikari.ComponentInteraction):
-            await ctx_or_interaction.edit_initial_response(
+            await ctx_or_interaction.create_initial_response(
+                hikari.ResponseType.MESSAGE_UPDATE,
                 error_message,
                 components=None,
                 flags=hikari.MessageFlag.EPHEMERAL

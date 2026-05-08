@@ -433,10 +433,13 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of unused hex keys"""
+        open_deferred = False
         try:
             # No hex provided: only use get_unused_keys_for_1byte
             if self.hex_char is None:
-                # Global PRE_INVOKE defer; channel fetch + file scan can exceed Discord's ~3s window.
+                # Defer before channel fetch + file scan — both can approach Discord's ~3s interaction limit.
+                await ctx.defer()
+                open_deferred = True
                 prefix_length = await get_prefix_length_for_context(ctx)
                 one_byte_list = await get_unused_keys_for_1byte(ctx, days=self.days)
                 if one_byte_list is None:
@@ -486,6 +489,9 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
             if hex_char[:2] in {"00", "FF"}:
                 await ctx.respond("Prefix cannot start with 00 or FF.", flags=hikari.MessageFlag.EPHEMERAL)
                 return
+
+            await ctx.defer()
+            open_deferred = True
 
             filtered_keys = await get_unused_keys_with_prefix(ctx, hex_char, days=self.days)
             if filtered_keys is None:
@@ -545,12 +551,12 @@ class OpenKeysCommand(lightbulb.SlashCommand, name="open",
         except Exception as e:
             logger.error(f"Error in open command: {e}")
             try:
-                await ctx.interaction.edit_initial_response("Error retrieving unused keys.")
-            except Exception:
-                try:
+                if open_deferred:
+                    await ctx.interaction.edit_initial_response("Error retrieving unused keys.")
+                else:
                     await ctx.respond(
                         "Error retrieving unused keys.",
                         flags=hikari.MessageFlag.EPHEMERAL,
                     )
-                except Exception:
-                    logger.debug("Could not send open command error response", exc_info=True)
+            except Exception:
+                logger.debug("Could not send open command error response", exc_info=True)
