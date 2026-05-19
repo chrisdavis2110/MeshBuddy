@@ -44,6 +44,7 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of active repeaters"""
+        list_deferred = False
         try:
             # Check command history for spam prevention
             category_id = await get_category_id_from_context(ctx)
@@ -53,15 +54,18 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                     await ctx.respond(f"{CROSS} {reason}", flags=hikari.MessageFlag.EPHEMERAL)
                     return
 
+            await ctx.defer()
+            list_deferred = True
+
             # Load nodes data based on the category where the command was invoked
             data = await get_nodes_data_for_context(ctx)
             if data is None:
-                await ctx.respond("Error retrieving repeater list.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.interaction.edit_initial_response("Error retrieving repeater list.")
                 return
 
             contacts = data.get("data", []) if isinstance(data, dict) else data
             if not isinstance(contacts, list):
-                await ctx.respond("Error retrieving repeater list.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.interaction.edit_initial_response("Error retrieving repeater list.")
                 return
 
             # Filter to repeaters only and normalize field names
@@ -142,9 +146,11 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
             if lines:
                 header = "Active Repeaters:"
                 footer = f"Total Active Repeaters: {active_repeater_count}"
-                await send_long_message(ctx, header, lines, footer)
+                await send_long_message(
+                    ctx, header, lines, footer, edit_initial_for_first_chunk=True
+                )
             else:
-                await ctx.respond("No active repeaters found.")
+                await ctx.interaction.edit_initial_response("No active repeaters found.")
 
             # Record command execution and reset events
             category_id = await get_category_id_from_context(ctx)
@@ -153,7 +159,16 @@ class ListRepeatersCommand(lightbulb.SlashCommand, name="list",
                 command_history.reset_events(category_id)
         except Exception as e:
             logger.error(f"Error in list command: {e}")
-            await ctx.respond("Error retrieving repeater list.", flags=hikari.MessageFlag.EPHEMERAL)
+            try:
+                if list_deferred:
+                    await ctx.interaction.edit_initial_response("Error retrieving repeater list.")
+                else:
+                    await ctx.respond(
+                        "Error retrieving repeater list.",
+                        flags=hikari.MessageFlag.EPHEMERAL,
+                    )
+            except Exception:
+                logger.debug("Could not send list command error response", exc_info=True)
 
 
 @client.register()
@@ -165,6 +180,7 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of offline repeaters"""
+        offline_deferred = False
         try:
             # Check command history for spam prevention
             category_id = await get_category_id_from_context(ctx)
@@ -174,9 +190,12 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
                     await ctx.respond(f"{CROSS} {reason}", flags=hikari.MessageFlag.EPHEMERAL)
                     return
 
+            await ctx.defer()
+            offline_deferred = True
+
             devices = await get_extract_device_types_for_context(ctx, device_types=['repeaters'], days=self.days)
             if devices is None:
-                await ctx.respond("Error retrieving offline repeaters.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.interaction.edit_initial_response("Error retrieving offline repeaters.")
                 return
 
             repeaters = devices.get('repeaters', [])
@@ -204,9 +223,11 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
 
                 header = "Offline Repeaters:"
                 footer = f"Total Repeaters: {len(lines)}"
-                await send_long_message(ctx, header, lines, footer)
+                await send_long_message(
+                    ctx, header, lines, footer, edit_initial_for_first_chunk=True
+                )
             else:
-                await ctx.respond("No offline repeaters found.")
+                await ctx.interaction.edit_initial_response("No offline repeaters found.")
 
             # Record command execution and reset events
             category_id = await get_category_id_from_context(ctx)
@@ -215,7 +236,16 @@ class OfflineRepeatersCommand(lightbulb.SlashCommand, name="offline",
                 command_history.reset_events(category_id)
         except Exception as e:
             logger.error(f"Error in offline command: {e}")
-            await ctx.respond("Error retrieving offline repeaters.", flags=hikari.MessageFlag.EPHEMERAL)
+            try:
+                if offline_deferred:
+                    await ctx.interaction.edit_initial_response("Error retrieving offline repeaters.")
+                else:
+                    await ctx.respond(
+                        "Error retrieving offline repeaters.",
+                        flags=hikari.MessageFlag.EPHEMERAL,
+                    )
+            except Exception:
+                logger.debug("Could not send offline command error response", exc_info=True)
 
 
 @client.register()
@@ -227,6 +257,7 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of duplicate repeater prefixes"""
+        dupes_deferred = False
         try:
             # Check command history for spam prevention
             category_id = await get_category_id_from_context(ctx)
@@ -236,15 +267,18 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
                     await ctx.respond(f"{CROSS} {reason}", flags=hikari.MessageFlag.EPHEMERAL)
                     return
 
+            await ctx.defer()
+            dupes_deferred = True
+
             # Load all repeaters (not filtered by days) to include future timestamps
             data = await get_nodes_data_for_context(ctx)
             if data is None:
-                await ctx.respond("Error retrieving duplicate prefixes.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.interaction.edit_initial_response("Error retrieving duplicate prefixes.")
                 return
 
             contacts = data.get("data", []) if isinstance(data, dict) else data
             if not isinstance(contacts, list):
-                await ctx.respond("Error retrieving duplicate prefixes.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.interaction.edit_initial_response("Error retrieving duplicate prefixes.")
                 return
 
             # Filter to repeaters only and normalize field names
@@ -303,11 +337,13 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
                 if lines:
                     header = "Duplicate Repeater Prefixes:"
                     footer = f"Total Duplicates: {len(lines)}"
-                    await send_long_message(ctx, header, lines, footer)
+                    await send_long_message(
+                        ctx, header, lines, footer, edit_initial_for_first_chunk=True
+                    )
                 else:
-                    await ctx.respond("No duplicate prefixes found.")
+                    await ctx.interaction.edit_initial_response("No duplicate prefixes found.")
             else:
-                await ctx.respond("No duplicate prefixes found.")
+                await ctx.interaction.edit_initial_response("No duplicate prefixes found.")
 
             # Record command execution and reset events
             category_id = await get_category_id_from_context(ctx)
@@ -316,7 +352,16 @@ class DuplicateKeysCommand(lightbulb.SlashCommand, name="dupes",
                 command_history.reset_events(category_id)
         except Exception as e:
             logger.error(f"Error in dupes command: {e}")
-            await ctx.respond("Error retrieving duplicate prefixes.", flags=hikari.MessageFlag.EPHEMERAL)
+            try:
+                if dupes_deferred:
+                    await ctx.interaction.edit_initial_response("Error retrieving duplicate prefixes.")
+                else:
+                    await ctx.respond(
+                        "Error retrieving duplicate prefixes.",
+                        flags=hikari.MessageFlag.EPHEMERAL,
+                    )
+            except Exception:
+                logger.debug("Could not send dupes command error response", exc_info=True)
 
 
 @client.register()
@@ -326,7 +371,11 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of removed repeaters"""
+        xlist_deferred = False
         try:
+            await ctx.defer()
+            xlist_deferred = True
+
             lines = []
 
             removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
@@ -348,12 +397,23 @@ class ListRemovedCommand(lightbulb.SlashCommand, name="xlist",
             if lines:
                 header = "Removed Repeaters:"
                 footer = f"Total Repeaters: {len(lines)}"
-                await send_long_message(ctx, header, lines, footer)
+                await send_long_message(
+                    ctx, header, lines, footer, edit_initial_for_first_chunk=True
+                )
             else:
-                await ctx.respond("No repeaters found.")
+                await ctx.interaction.edit_initial_response("No repeaters found.")
         except Exception as e:
             logger.error(f"Error in xlist command: {e}")
-            await ctx.respond("Error retrieving removed list.", flags=hikari.MessageFlag.EPHEMERAL)
+            try:
+                if xlist_deferred:
+                    await ctx.interaction.edit_initial_response("Error retrieving removed list.")
+                else:
+                    await ctx.respond(
+                        "Error retrieving removed list.",
+                        flags=hikari.MessageFlag.EPHEMERAL,
+                    )
+            except Exception:
+                logger.debug("Could not send xlist command error response", exc_info=True)
 
 
 @client.register()
@@ -363,6 +423,7 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Get list of reserved repeaters"""
+        rlist_deferred = False
         try:
             # Check command history for spam prevention
             category_id = await get_category_id_from_context(ctx)
@@ -371,6 +432,9 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                 if not can_execute:
                     await ctx.respond(f"{CROSS} {reason}", flags=hikari.MessageFlag.EPHEMERAL)
                     return
+
+            await ctx.defer()
+            rlist_deferred = True
 
             lines = []
 
@@ -397,11 +461,13 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                                 continue
                 except json.JSONDecodeError as e:
                     logger.error(f"Error parsing reserved nodes file {reserved_nodes_file}: {e}")
-                    await ctx.respond("Error: Invalid JSON in reserved nodes file.", flags=hikari.MessageFlag.EPHEMERAL)
+                    await ctx.interaction.edit_initial_response(
+                        "Error: Invalid JSON in reserved nodes file."
+                    )
                     return
                 except Exception as e:
                     logger.error(f"Error reading reserved nodes file {reserved_nodes_file}: {e}")
-                    await ctx.respond("Error reading reserved nodes file.", flags=hikari.MessageFlag.EPHEMERAL)
+                    await ctx.interaction.edit_initial_response("Error reading reserved nodes file.")
                     return
 
             lines.sort(key=extract_prefix_for_sort)
@@ -409,9 +475,11 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
             if lines:
                 header = "Reserved Nodes:"
                 footer = f"Total Reserved: {len(lines)}"
-                await send_long_message(ctx, header, lines, footer)
+                await send_long_message(
+                    ctx, header, lines, footer, edit_initial_for_first_chunk=True
+                )
             else:
-                await ctx.respond("No reserved nodes found.")
+                await ctx.interaction.edit_initial_response("No reserved nodes found.")
 
             # Record command execution and reset events
             category_id = await get_category_id_from_context(ctx)
@@ -420,7 +488,16 @@ class ListReservedCommand(lightbulb.SlashCommand, name="rlist",
                 command_history.reset_events(category_id)
         except Exception as e:
             logger.error(f"Error in rlist command: {e}")
-            await ctx.respond("Error retrieving reserved list.", flags=hikari.MessageFlag.EPHEMERAL)
+            try:
+                if rlist_deferred:
+                    await ctx.interaction.edit_initial_response("Error retrieving reserved list.")
+                else:
+                    await ctx.respond(
+                        "Error retrieving reserved list.",
+                        flags=hikari.MessageFlag.EPHEMERAL,
+                    )
+            except Exception:
+                logger.debug("Could not send rlist command error response", exc_info=True)
 
 
 @client.register()
