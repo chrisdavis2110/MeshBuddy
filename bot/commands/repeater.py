@@ -27,6 +27,24 @@ from bot.utils import (
 from bot.tasks import send_long_message
 
 
+def _repeater_seen_within_days(contact: dict, days: int, now: datetime | None = None) -> bool:
+    """True if last_seen is in the future, or within the last ``days`` days."""
+    if now is None:
+        now = datetime.now().astimezone()
+    last_seen = contact.get("last_seen")
+    if not last_seen:
+        return True
+    try:
+        ls = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+        if ls.tzinfo is None:
+            ls = ls.replace(tzinfo=now.tzinfo)
+        if ls > now:
+            return True
+        return (now - ls).days <= days
+    except Exception:
+        return True
+
+
 def _repeater_hash_mode_bytes(contact: dict) -> int | None:
     """Return clamped hash size in bytes (1–3) from node hash_mode, or None if missing/invalid."""
     hm = contact.get("hash_mode")
@@ -205,8 +223,8 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
                 return
             hex_prefix = hex_prefix_or_err
             plen = len(hex_prefix)
+            days = int(self.days) if self.days is not None else 14
 
-            # Load all repeaters (not filtered by days) to include future timestamps
             data = await get_nodes_data_for_context(ctx)
             if data is None:
                 await ctx.respond("Error retrieving repeater stats.", flags=hikari.MessageFlag.EPHEMERAL)
@@ -231,6 +249,9 @@ class RepeaterStatsCommand(lightbulb.SlashCommand, name="stats",
             # Filter out removed nodes (category-specific)
             removed_nodes_file = await get_removed_nodes_file_for_context(ctx)
             repeaters = [r for r in repeaters if not is_node_removed(r, removed_nodes_file)]
+
+            # Within the last ``days`` days, or with a future last_seen
+            repeaters = [r for r in repeaters if _repeater_seen_within_days(r, days)]
 
             if repeaters and len(repeaters) > 0:
                 if len(repeaters) == 1:
