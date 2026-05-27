@@ -404,15 +404,19 @@ class PhashCommand(lightbulb.SlashCommand, name="phash",
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context):
         """Summarize or list repeaters by hash_mode."""
+        phash_deferred = False
         try:
+            await ctx.defer()
+            phash_deferred = True
+
             data = await get_nodes_data_for_context(ctx)
             if data is None:
-                await ctx.respond("Error loading repeater data.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.interaction.edit_initial_response("Error loading repeater data.")
                 return
 
             contacts = data.get("data", []) if isinstance(data, dict) else data
             if not isinstance(contacts, list):
-                await ctx.respond("Error loading repeater data.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.interaction.edit_initial_response("Error loading repeater data.")
                 return
 
             repeaters = []
@@ -448,7 +452,7 @@ class PhashCommand(lightbulb.SlashCommand, name="phash",
                 if c_unknown:
                     msg += f"No hash size reported: **{c_unknown}**\n"
                 msg += f"Total repeaters: **{total}**"
-                await ctx.respond(msg)
+                await ctx.interaction.edit_initial_response(msg)
                 return
 
             hs = int(self.hash_size)
@@ -464,7 +468,9 @@ class PhashCommand(lightbulb.SlashCommand, name="phash",
                     matched.append(r)
 
             if not matched:
-                await ctx.respond(f"No repeaters with {hs}-byte hash size.")
+                await ctx.interaction.edit_initial_response(
+                    f"No repeaters with {hs}-byte hash size."
+                )
                 return
 
             lines = []
@@ -477,7 +483,18 @@ class PhashCommand(lightbulb.SlashCommand, name="phash",
             lines.sort(key=extract_prefix_for_sort)
             header = f"Repeaters with {hs}-byte hash size:"
             footer = f"Total: {len(matched)}"
-            await send_long_message(ctx, header, lines, footer)
+            await send_long_message(
+                ctx, header, lines, footer, edit_initial_for_first_chunk=True
+            )
         except Exception as e:
             logger.error(f"Error in phash command: {e}")
-            await ctx.respond("Error running /phash.", flags=hikari.MessageFlag.EPHEMERAL)
+            try:
+                if phash_deferred:
+                    await ctx.interaction.edit_initial_response("Error running /phash.")
+                else:
+                    await ctx.respond(
+                        "Error running /phash.",
+                        flags=hikari.MessageFlag.EPHEMERAL,
+                    )
+            except Exception:
+                logger.debug("Could not send phash command error response", exc_info=True)
