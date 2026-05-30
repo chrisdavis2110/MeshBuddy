@@ -299,7 +299,7 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/open` - Get list of unused hex keys
 `/prefix <hex>` - Check if a hex prefix is available
 `/rlist` - Get list of reserved repeaters
-`/stats <hex>` - Get detailed stats of a repeater by hex prefix
+`/stats <hex> [days]` - Get detailed stats of a repeater by hex prefix (default: 14 days)
 `/qr <hex>` - Generate a QR code for adding a contact
 `/reserve <prefix> <name>` - Reserve a hex prefix for a repeater
 `/release <prefix>` - Release a hex prefix from the reserve list
@@ -309,7 +309,7 @@ class HelpCommand(lightbulb.SlashCommand, name="help",
 `/keygen <prefix>` - Generate a MeshCore keypair with a specific prefix
 `/help` - Show this help message
 
--# Version: 1.6.1
+-# Version: 1.6.3
 """
 
             await ctx.respond(help_message)
